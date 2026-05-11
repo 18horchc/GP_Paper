@@ -126,21 +126,6 @@ inffunc = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-% --- Pensoneault et al. (2020): constraint knobs (tune if fmincon is infeasible) ---
-m_constraint = 30;                    % number of constraint locations X_c (includes [S]=0)
-eta_quantile = 2.2 / 100;             % P(f<0) <= eta; Phi^{-1}(eta) ~ -2 for eta=2.2%
-k_nonneg = -sqrt(2) * erfinv(2 * eta_quantile - 1);   % Phi^{-1}(eta); ~2 for 2.2%
-k_epsilon = 1;                        % data fidelity: epsilon = k_epsilon * mean(v0_std) (tune k_epsilon)
-% Nonnegativity on latent f(x) (noise-free v0): easier/feasible than y|x predictive; still Pensoneault-style tail bound
-use_latent_nonneg = true;
-v0_std_mean = mean(v0_std(v0_std > 0));
-epsilon_data = k_epsilon * v0_std_mean;   % |y_j - m(x_j)| <= epsilon (muM/s)
-x_hi_c = max(x_grid);
-% X_c: exactly m_constraint points from 0 to x_hi_c (0 is always the first constraint point)
-X_c = [0; linspace(x_hi_c / (m_constraint - 1), x_hi_c, m_constraint - 1)'];
-fprintf('Pensoneault data fidelity: epsilon = k_epsilon * mean(v0_std) = %.2f * %.4f = %.4f (muM/s)\n', ...
-    k_epsilon, v0_std_mean, epsilon_data);
-
 %  Hyperparameter Optimization (unconstrained baseline)
 % -100 specifies a maximum of 100 function evaluations
 fprintf('Optimizing hyperparameters (unconstrained NLML)...\n');
@@ -150,65 +135,52 @@ hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y
 f_upper_unc = m_unc + 2 * sqrt(max(s2_unc, 0));
 f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 
-% --- Constrained NLML (Pensoneault et al., fmincon) ---
-hyp_tpl = struct('mean', hyp_unc.mean, 'cov', hyp_unc.cov, 'lik', hyp_unc.lik);
-theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
-% Floor sigma_n so the solver cannot collapse noise to ~0 to cheat constraints (stabilizes KKT / NLML)
-sn_floor = max(1e-3, 0.35 * noise_level_gp);
-lb = [-10; -10; log(sn_floor)];
-ub = [10; 10; 5];
-theta0 = min(max(theta0, lb), ub);
+% --- Pensoneault constrained GP (direct math-to-code translation of Eqs. 12-14) ---
+% Eq. (12):  argmin_theta  -log p(y | X, theta)
+% Eq. (13):  0 <= y*(x_c^(i)) - k * s(x_c^(i)),  i = 1, ..., m
+% Eq. (14):  0 <= epsilon  - |y^(j) - y*(x^(j))|, j = 1, ..., n
+% y*(.) and s(.) are the GP posterior predictive mean and standard deviation
+% (noisy predictive in GPML: ymu, sqrt(ys2)) at theta = (log_ell, log_sf, log_sn).
 
-objfun = @(th) pens_nlml(th, hyp_tpl, x_col, y_col, meanfunc, covfunc, likfunc, inffunc);
-nonlfun = @(th) pens_nonlcon(th, hyp_tpl, x_col, y_col, meanfunc, covfunc, likfunc, inffunc, ...
-    X_c, k_nonneg, epsilon_data, use_latent_nonneg);
+% theta packs the hyperparameters as: [log(ell); log(sf); log(sn)].
+% Use the initial guess `hyp` (built earlier) as the template -- nothing here
+% depends on the unconstrained fit.
+hyp_tpl = hyp;
 
-% SQP is often more stable than interior-point for this small dense NLP; relax tol vs 1e-6 to reduce false infeasible stops
-opts_sqp = optimoptions('fmincon', 'Algorithm', 'sqp', 'Display', 'iter', ...
-    'MaxIterations', 1500, 'MaxFunctionEvaluations', 3000, ...
-    'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, 'StepTolerance', 1e-10);
-opts_ip = optimoptions('fmincon', 'Algorithm', 'interior-point', 'Display', 'iter', ...
-    'MaxIterations', 1500, 'MaxFunctionEvaluations', 3000, ...
-    'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, 'StepTolerance', 1e-10);
-try
-    opts_ip = optimoptions(opts_ip, 'EnableFeasibilityMode', true);
-catch
-end
+% Eq. (13) ingredients: m=30 equally spaced constraint points across the domain;
+% k = inverse normal CDF at eta=2.2%, paper's approximation k=2.
+m_constraint = 30;
+X_c = linspace(0, max(x_grid), m_constraint)';
+eta = 0.022;
+k   = 2;
 
-if use_latent_nonneg
-    nnz_mode = 'latent f (noise-free v_0)';
-else
-    nnz_mode = 'noisy predictive y';
-end
-fprintf('Running constrained optimization (fmincon, SQP). Nonneg on %s; sigma_n >= %.4f muM/s.\n', ...
-    nnz_mode, sn_floor);
-epsilon_used = epsilon_data;
-[theta_opt, ~, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlfun, opts_sqp);
+% Eq. (14) ingredient: epsilon = .03.
+epsilon = .03;
 
-if ~ismember(exitflag, [1, 2])
-    warning('SQP exit flag %d. Trying interior-point with feasibility mode.', exitflag);
-    [theta_opt, ~, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlfun, opts_ip);
-end
+% Start from the SAME initial guess as the unconstrained fit -- no warm start.
+theta0 = [hyp.cov(1); hyp.cov(2); hyp.lik(1)];
 
-if ~ismember(exitflag, [1, 2])
-    warning('fmincon exit flag %d (%s). Retrying with paper fallback initial theta.', ...
-        exitflag, output.message);
-    theta_fallback = [-3; -3; -10] + 0.1 * randn(3, 1);
-    theta_fallback = min(max(theta_fallback, lb), ub);
-    [theta_opt, ~, exitflag, output] = fmincon(objfun, theta_fallback, [], [], [], [], lb, ub, nonlfun, opts_sqp);
-end
+% Lower bound on log(sigma_n) only. Stops fmincon from collapsing sigma_n
+% toward zero -- with replicates, the 21x21 kernel matrix has only 7 unique
+% inputs and becomes rank-deficient without the sigma_n^2 diagonal jitter,
+% which makes chol() inside GPML's infGaussLik fail.
+% log(ell) and log(sf) are left unbounded (-Inf / +Inf).
+sn_floor = 1e-3;
+lb = [-Inf; -Inf; log(sn_floor)];
+ub = [];
 
-if ~ismember(exitflag, [1, 2])
-    warning('Constrained optimization still not converged (exitflag=%d). Loosening epsilon_data once.', exitflag);
-    epsilon_loose = max(epsilon_data, 1.5 * k_epsilon * v0_std_mean);
-    nonlfun_loose = @(th) pens_nonlcon(th, hyp_tpl, x_col, y_col, meanfunc, covfunc, likfunc, inffunc, ...
-        X_c, k_nonneg, epsilon_loose, use_latent_nonneg);
-    [theta_opt, ~, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlfun_loose, opts_sqp);
-    epsilon_used = epsilon_loose;
-    fprintf('Retried with epsilon_data = %.4f (muM/s)\n', epsilon_loose);
-end
+% Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
+objfun  = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+% Inequality constraints (Eqs. 13 and 14), stacked into a single c(theta) <= 0 vector.
+nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon);
 
-hyp_con = pens_unpack_theta(theta_opt, hyp_tpl);
+opts = optimoptions('fmincon', 'Display', 'iter');
+
+fprintf('Running constrained optimization (fmincon). m=%d, k=%g, epsilon=%.4f, sn_floor=%.4f.\n', ...
+    m_constraint, k, epsilon, sn_floor);
+[theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlcon, opts);
+
+hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
 [m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
 f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
@@ -244,7 +216,7 @@ plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
 yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlabel('[S] (mM)');
 ylabel('v_0 (\muM/s)');
-title(sprintf('Nonnegative-enforced (m=%d, k=%.2f, \\epsilon=%.2f)', m_constraint, k_nonneg, epsilon_used));
+title(sprintf('Nonnegative-enforced (m=%d, k=%g, \\epsilon=%.2f)', m_constraint, k, epsilon));
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
 ylim(ylim_unc);
@@ -252,10 +224,10 @@ ylim(ylim_unc);
 fprintf('GP optimization complete.\n');
 fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), ...
-    pens_nlml([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_tpl, x_col, y_col, meanfunc, covfunc, likfunc, inffunc));
+    gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col));
 fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), ...
-    pens_nlml(theta_opt, hyp_tpl, x_col, y_col, meanfunc, covfunc, likfunc, inffunc), exitflag);
+    nlml_opt, exitflag);
 
 %% Encodings to try:
 % Non zero mean. Since MM kinetircs are strictly positive and approach
@@ -291,41 +263,33 @@ fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitfla
 % Note that warping the output distorts the uncertainty bands. Uncertainty
 % will become asymmetric.
 
-function hyp = pens_unpack_theta(theta, hyp_tpl)
+function hyp = theta_to_hyp(theta, hyp_tpl)
+% Pack the flat vector theta = [log(ell); log(sf); log(sn)] into a GPML hyp struct.
 hyp = hyp_tpl;
 hyp.cov = theta(1:2);
 hyp.lik = theta(3);
 end
 
-function nlZ = pens_nlml(theta, hyp_tpl, x, y, meanf, covf, likf, infMeth)
-hyp = pens_unpack_theta(theta, hyp_tpl);
-try
-    nlZ = gp(hyp, infMeth, meanf, covf, likf, x, y);
-catch
-    nlZ = 1e10;
-end
-end
+function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon)
+% Direct math-to-code translation of Pensoneault Eqs. (13) and (14).
+% fmincon expects inequality constraints in the form c(theta) <= 0.
 
-function [c, ceq] = pens_nonlcon(theta, hyp_tpl, x, y, meanf, covf, likf, infMeth, Xc, k, epsd, use_latent_nonneg)
+hyp = theta_to_hyp(theta, hyp_tpl);
+
+% One GPML predictive call covers both constraint blocks: stack X_c and training x.
+xstar = [X_c; x];
+[ymu, ys2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
+
+nC   = numel(X_c);
+y_star_xc = ymu(1:nC);                       % y*(x_c^(i))
+s_xc      = sqrt(max(ys2(1:nC), 0));         % s(x_c^(i))
+y_star_xj = ymu(nC+1:end);                   % y*(x^(j))
+
+% Eq. (13): 0 <= y*(x_c) - k * s(x_c)   =>   c_nonneg = k * s(x_c) - y*(x_c) <= 0
+c_nonneg = k * s_xc - y_star_xc;
+% Eq. (14): 0 <= epsilon - |y - y*(x)|  =>   c_data   = |y - y*(x)| - epsilon <= 0
+c_data   = abs(y - y_star_xj) - epsilon;
+
+c   = [c_nonneg; c_data];
 ceq = [];
-hyp = pens_unpack_theta(theta, hyp_tpl);
-try
-    xstar = [Xc(:); x(:)];
-    [ymu, ys2, fmu, fs2] = gp(hyp, infMeth, meanf, covf, likf, x, y, xstar);
-catch
-    c = 1e6 * ones(numel(Xc) + numel(y), 1);
-    return;
-end
-nC = numel(Xc);
-if use_latent_nonneg
-    mc = fmu(1:nC);
-    sc = sqrt(max(fs2(1:nC), 1e-18));
-else
-    mc = ymu(1:nC);
-    sc = sqrt(max(ys2(1:nC), 1e-18));
-end
-c_nonneg = k * sc - mc;
-mj = ymu(nC+1:end);
-c_data = abs(y(:) - mj) - epsd;
-c = [c_nonneg; c_data];
 end
