@@ -110,14 +110,13 @@ sn0  = max(1e-3, noise_level_gp);
 
 % Initialize the GPML hyperparameter structure
 hyp = struct();
-hyp.mean = []; % Correct for meanZero
+hyp.mean = mean(y_train); % scalar warm-start for meanConst (~empirical mean of y)
 hyp.cov  = log([ell0; sf0]); 
 hyp.lik  = log(sn0);
 
 % Define GP components 
-meanfunc = @meanZero; 
-%meanfunc = @meanConst; 
-%hyp.mean = mm_static(20);
+% meanfunc = @meanZero;   % old default; swap back if you want a zero-mean prior
+meanfunc = @meanConst;
 %covfunc  = {@covMaterniso,5}; 
 covfunc = @covSEiso;
 likfunc = @likGauss;
@@ -153,7 +152,7 @@ hyp_tpl = hyp_unc;
 m_constraint = 30;
 X_c = linspace(0, max(x_grid), m_constraint)';
 eta = 0.022;
-k   = 2;
+k   = -sqrt(2) * erfinv(2*eta - 1); %def of invCDF(eta)
 
 % Eq. (14) ingredient: epsilon = 0.165 muM/s.
 % Paper uses epsilon = 0.03 on a function of range ~1; rescaled to our
@@ -169,15 +168,16 @@ epsilon = 0.165;
 y_max = Vmax;
 
 % Warm start theta0 from the unconstrained NLML solution.
-theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
+% theta now includes the constant prior mean as a 4th entry (linear scale).
+theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1); hyp_unc.mean];
 
 % Lower bound on log(sigma_n) only. Stops fmincon from collapsing sigma_n
 % toward zero -- with replicates, the 21x21 kernel matrix has only 7 unique
 % inputs and becomes rank-deficient without the sigma_n^2 diagonal jitter,
 % which makes chol() inside GPML's infGaussLik fail.
-% log(ell) and log(sf) are left unbounded (-Inf / +Inf).
+% log(ell), log(sf), and mu are left unbounded (-Inf / +Inf).
 sn_floor = 1e-3;
-lb = [-Inf; -Inf; log(sn_floor)];
+lb = [-Inf; -Inf; log(sn_floor); -Inf];
 ub = [];
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
@@ -233,11 +233,11 @@ set(gca, 'FontSize', 11);
 ylim(ylim_unc);
 
 fprintf('GP optimization complete.\n');
-fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), ...
+fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f\n', ...
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), hyp_unc.mean, ...
     gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col));
-fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
-    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), ...
+fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
+    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), hyp_con.mean, ...
     nlml_opt, exitflag);
 
 %% Encodings to try:
@@ -275,10 +275,12 @@ fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitfla
 % will become asymmetric.
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
-% Pack the flat vector theta = [log(ell); log(sf); log(sn)] into a GPML hyp struct.
+% Pack the flat vector theta = [log(ell); log(sf); log(sn); mu] into a GPML hyp struct.
+% mu is in linear space (no log) -- the constant prior mean can be any real number.
 hyp = hyp_tpl;
-hyp.cov = theta(1:2);
-hyp.lik = theta(3);
+hyp.cov  = theta(1:2);
+hyp.lik  = theta(3);
+hyp.mean = theta(4);
 end
 
 function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon, y_max)
