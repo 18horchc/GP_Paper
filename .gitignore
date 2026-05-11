@@ -4,3 +4,7 @@
 # Allowlist the items we actually want in the repo.
 !/.gitignore
 !/problems/
+
+# Even inside allowlisted folders, never track MATLAB autosaves or log files.
+*.asv
+*.log
