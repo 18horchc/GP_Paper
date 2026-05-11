@@ -1,0 +1,6 @@
+# Ignore everything by default; only the listed paths below are tracked.
+/*
+
+# Allowlist the items we actually want in the repo.
+!/.gitignore
+!/problems/

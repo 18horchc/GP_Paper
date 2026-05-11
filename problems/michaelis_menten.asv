@@ -1,0 +1,426 @@
+% GP Research Project: Acute Transient Equation Sampling
+clear; clc; close all;
+
+agent_debug = struct();
+agent_debug.log_path = 'C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Bio_Inf_GP_Code\debug-769185.log';
+agent_debug.session_id = '769185';
+agent_debug.run_id = sprintf('run_%0.0f', round((now - datenum(1970,1,1,0,0,0)) * 86400000));
+script_t0 = tic;
+% #region agent log
+agent_log_debug(agent_debug, 'H18', 'problems/michaelis_menten.m:9', 'Instrumentation version marker', ...
+    struct('instrumentation_version', 'v3_h10_h17_h18', ...
+    'script_fullpath', mfilename('fullpath')));
+% #endregion
+
+%% 1. Define Realistic Parameters 
+% Parameters 
+Vmax = 118;       % Maximum velocity (units/s) 
+Km   = 88;        % Michaelis constant (units of [S]) 
+
+x_max = 400;
+
+% Define function
+% v = (Vmax * [S]) / (Km + [S])
+mm_static = @(S) (Vmax .* S) ./ (Km + S); 
+
+
+%% 2. Generate Ground Truth Curve
+x_grid = linspace(0.01, x_max, 500); % Continuous concentration range
+y_true = mm_static(x_grid);
+
+%% 3. Random Sampling with Noise 
+n_samples = 8;                   
+noise_level = 0.05;               % Gaussian Noise
+
+% Uncomment the line below to sample concentration points randomly across the domain 
+%x_train = sort(x_max * rand(1, n_samples)); 
+
+%possible_x = 0:0.5:x_max;
+%x_train = sort(possible_x(randperm(length(possible_x), n_samples)));
+
+% Uncomment the line below to sample point uniformly across domain
+x_train = linspace(0, x_max, n_samples);
+
+% Uncommnet the two lines below to sample points at specific locations across domain
+%x_train = [0.1, 0.5, 1.0, 1.5, 2.0, 6.0, 7.5, 9.0, 10.0,20.0];
+%n_samples = length(x_train);    % Automatically update sample count
+
+
+% Calculate true response at sampled points and add noise
+%y_clean = mm_static(x_train);
+%y_noisy = y_clean + noise_level * max(y_true) * randn(size(y_clean)); %relative noise added
+%y_noisy = y_clean + noise_level * Vmax * randn(size(y_clean));
+%y_train = min(max(y_noisy, 0), Vmax); %stay within system bounds 
+% (if a noisy point is below 0, it will be set to 0, if a noisy point is 
+% above Vmax, it will be set to Vmax)
+
+% 3 replicates per time point
+n_replicates = 3;
+x_train_expanded = repmat(x_train, 1, n_replicates);
+y_clean = mm_static(x_train_expanded);
+y_noisy = y_clean + noise_level * max(y_true) * randn(size(y_clean));
+y_train = min(max(y_noisy, 0), Vmax);
+x_train = x_train_expanded;
+
+%% 4. Visualization
+% figure('Color', 'w', 'Position', [100, 100, 800, 500]);
+% hold on; grid on;
+% 
+% % Plot continuous solution curve 
+% plot(x_grid, y_true, 'b-', 'LineWidth', 2, 'DisplayName', 'Ground Truth');
+% 
+% % Plot the horizontal asymptote (Vmax) [cite: 12, 145]
+% yline(Vmax, 'r--', 'V_{max} (Asymptote)', 'LabelVerticalAlignment', 'bottom');
+% 
+% % Plot sampled noisy points
+% plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+%     'DisplayName', sprintf('Sampled Data (n=%d, %g%%  Noise)', n_samples, noise_level*100));
+% 
+% % Labels and Formatting
+% xlabel('Substrate Concentration [S]');
+% ylabel('Initial Reaction Velocity (v_0)');
+% title('Michaelis-Menten Kinetics');
+% legend('Location', 'southeast');
+% set(gca, 'FontSize', 12);
+% 
+% %fprintf('Simulation complete. n=%d samples generated.\n', n_samples);
+
+
+
+
+%% Fit the Naive GP
+% We check for a core GPML function like 'gp.m'
+gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
+
+try
+    [userview_before, ~] = memory; % Windows only
+    matlab_mem_used_mb_before = userview_before.MemUsedMATLAB / 1e6;
+    matlab_mem_available_mb_before = userview_before.MemAvailableAllArrays / 1e6;
+catch
+    matlab_mem_used_mb_before = NaN;
+    matlab_mem_available_mb_before = NaN;
+end
+
+% #region agent log
+agent_log_debug(agent_debug, 'H10', 'problems/michaelis_menten.m:95', 'Baseline runtime environment before GP setup', ...
+    struct('gp_exists_before', exist('gp', 'file'), ...
+    'usejava_jvm', usejava('jvm'), 'usejava_desktop', usejava('desktop'), ...
+    'matlab_mem_used_mb_before', matlab_mem_used_mb_before, ...
+    'matlab_mem_available_mb_before', matlab_mem_available_mb_before, ...
+    'n_samples', n_samples, 'x_grid_len', numel(x_grid)));
+% #endregion
+
+% Check if the core 'gp' function is available in the current path 
+gp_setup_t0 = tic;
+addpath_executed = false;
+addpath_elapsed_sec = NaN;
+if ~exist('gp', 'file')
+    fprintf('GPML not found. Searching in local directory: %s...\n', gpml_folder_name);
+    
+    % Check if the folder exists on your drive
+    if exist(gpml_folder_name, 'dir')
+        addpath_t0 = tic;
+        addpath(genpath(gpml_folder_name)); % Adds the folder and all its math subfolders
+        addpath_elapsed_sec = toc(addpath_t0);
+        addpath_executed = true;
+        fprintf('GPML successfully added to path.\n');
+    else
+        % If it's still missing, we throw an error with instructions
+        error(['GPML toolbox missing! Please download it and ensure ' ...
+               'the folder "%s" is in your project directory.'], gpml_folder_name);
+    end
+else
+    fprintf('GPML toolbox is already loaded and ready.\n');
+end
+
+% Run GPML's internal startup to ensure MEX files/utilities are ready
+startup_candidates = which('startup', '-all');
+if iscell(startup_candidates)
+    startup_candidates_count = numel(startup_candidates);
+else
+    startup_candidates_count = 0;
+end
+startup_ok = true;
+startup_error_id = '';
+startup_error_message = '';
+startup_elapsed_sec = NaN;
+try
+    startup_t0 = tic;
+    startup; 
+    startup_elapsed_sec = toc(startup_t0);
+catch ME
+    startup_ok = false;
+    startup_error_id = ME.identifier;
+    startup_error_message = ME.message;
+    % If GPML doesn't have a startup.m in the version you got, this just skips
+end
+gp_setup_elapsed_sec = toc(gp_setup_t0);
+% #region agent log
+agent_log_debug(agent_debug, 'H11', 'problems/michaelis_menten.m:143', 'GP setup phase timing details', ...
+    struct('addpath_executed', addpath_executed, 'addpath_elapsed_sec', addpath_elapsed_sec, ...
+    'startup_ok', startup_ok, 'startup_elapsed_sec', startup_elapsed_sec, ...
+    'startup_candidates_count', startup_candidates_count, 'startup_error_id', startup_error_id, ...
+    'startup_error_message', startup_error_message, 'gp_setup_elapsed_sec', gp_setup_elapsed_sec));
+% #endregion
+
+% Configuration & Initial Hyperparameters
+% Pre-calculating values for initialization
+ell0 = std(x_train); 
+sf0  = std(y_train);
+sn0  = max(1e-3, noise_level * max(y_true)); % Using your 5% noise level
+
+% Initialize the GPML hyperparameter structure
+hyp = struct();
+hyp.mean = []; % Correct for meanZero
+hyp.cov  = log([ell0; sf0]); 
+hyp.lik  = log(sn0);
+
+% Define GP components 
+meanfunc = @meanZero; 
+%meanfunc = @meanConst; 
+%hyp.mean = mm_static(20);
+%covfunc  = {@covMaterniso,5}; 
+covfunc = @covSEiso;
+likfunc  = @likGauss;
+
+%  Hyperparameter Optimization
+% Optimize using the minimize function (conjugate gradient)
+% -100 specifies a maximum of 100 function evaluations
+fprintf('Optimizing hyperparameters...\n');
+minimize_t0 = tic;
+hyp = minimize(hyp, @gp, -100, @infGaussLik, meanfunc, covfunc, likfunc, x_train', y_train');
+minimize_elapsed_sec = toc(minimize_t0);
+try
+    [userview_after, ~] = memory; % Windows only
+    matlab_mem_used_mb_after = userview_after.MemUsedMATLAB / 1e6;
+    matlab_mem_available_mb_after = userview_after.MemAvailableAllArrays / 1e6;
+catch
+    matlab_mem_used_mb_after = NaN;
+    matlab_mem_available_mb_after = NaN;
+end
+
+% Prediction
+% Query the GP at the x_grid points
+predict_t0 = tic;
+[m, s2] = gp(hyp, @infGaussLik, meanfunc, covfunc, likfunc, x_train', y_train', x_grid');
+predict_elapsed_sec = toc(predict_t0);
+
+% Calculate 95% Confidence Interval (±2 standard deviations)
+f_upper = m + 2*sqrt(s2);
+f_lower = m - 2*sqrt(s2);
+
+%% Visualization of GP
+figs_before = findall(0, 'Type', 'figure');
+figs_before_count = numel(figs_before);
+renderer_info = struct('opengl_renderer', '', 'opengl_vendor', '');
+try
+    ogl = rendererinfo('data');
+    renderer_info.opengl_renderer = ogl.Renderer;
+    renderer_info.opengl_vendor = ogl.Vendor;
+catch
+end
+plot_t0 = tic;
+figure('Color', 'w', 'Position', [100, 100, 900, 600]);
+hold on; grid on;
+
+% 4a. Plot Uncertainty Bounds (Shaded Area)
+fill([x_grid, fliplr(x_grid)], [f_upper', fliplr(f_lower')], [0.5, 0.50, 0.50], ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% Confidence Interval');
+
+% 4b. Plot GP Mean Prediction
+plot(x_grid, m, 'k--', 'LineWidth', 2, 'DisplayName', 'GP Mean Prediction');
+
+% 4c. Plot Ground Truth and Samples
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground Truth');
+plot(x_train, y_train, 'ko', ...
+    'MarkerFaceColor', 'k', ...
+    'MarkerSize', 6, ...
+    'DisplayName', sprintf('Noisy Samples (%.1f%% Noise)', noise_level*100));
+% Formatting
+yline(Vmax, 'k:', 'V_{max} Asymptote', 'Alpha', 0.5);
+xlabel('Substrate Concentration [S]');
+ylabel('Velocity (v_0)');
+title('Michaelis-Menten: GP Surrogate with SE Kernel');
+legend('Location', 'southeast');
+set(gca, 'FontSize', 12);
+plot_elapsed_sec = toc(plot_t0);
+figs_after = findall(0, 'Type', 'figure');
+figs_after_count = numel(figs_after);
+% #region agent log
+agent_log_debug(agent_debug, 'H12', 'problems/michaelis_menten.m:233', 'Compute and graphics phase timings', ...
+    struct('minimize_elapsed_sec', minimize_elapsed_sec, 'predict_elapsed_sec', predict_elapsed_sec, ...
+    'plot_elapsed_sec', plot_elapsed_sec, 'figs_before_count', figs_before_count, ...
+    'figs_after_count', figs_after_count, ...
+    'renderer', renderer_info, 'm_has_nan', any(isnan(m)), 's2_has_nan', any(isnan(s2)), ...
+    's2_has_neg', any(s2 < 0)));
+% #endregion
+
+fprintf('GP Optimization Complete.\n');
+fprintf('Final lengthscale (ell): %.2f\n', exp(hyp.cov(1)));
+fprintf('Final noise (sn): %.4f\n', exp(hyp.lik));
+
+% #region agent log
+agent_log_debug(agent_debug, 'H13', 'problems/michaelis_menten.m:246', 'End-to-end script timing and memory drift', ...
+    struct('total_elapsed_sec', toc(script_t0), ...
+    'matlab_mem_used_mb_before', matlab_mem_used_mb_before, ...
+    'matlab_mem_used_mb_after', matlab_mem_used_mb_after, ...
+    'matlab_mem_used_mb_delta', matlab_mem_used_mb_after - matlab_mem_used_mb_before, ...
+    'matlab_mem_available_mb_before', matlab_mem_available_mb_before, ...
+    'matlab_mem_available_mb_after', matlab_mem_available_mb_after));
+% #endregion
+
+%% Encodings to try:
+% Non zero mean. Since MM kinetircs are strictly positive and approach
+% asymptote at Vmax, large gaps in data points may suffer from
+% prior-dominated corridor effect where the prediction will try to revert
+% to zero rather than staying near saturation plateau when zero mean is
+% used.
+
+% Hyperparameter initialization techniques:  $std(x)$ for the lengthscale 
+% ($\ell$) and $std(y)$ for the signal variance ($\sigma_f$) is a classic, 
+% robust heuristic for stationary data. Just remember that GPML's minimize 
+% function can sometimes get stuck in local minima if the initial noise 
+% guess ($sn_0$) is too far from the actual 5% relative noise you've 
+% injected. 
+% Log-Space Optimization: Remember that GPML optimizes in 
+% log-space. If your initial noise guess ($sn_0$) is too high, the 
+% optimizer might converge to a "noise-only" solution where the GP treats 
+% the entire biological signal as random fluctuation
+
+% Kernel Choice: You are using covSEiso (Squared Exponential). This assumes 
+% the function is infinitely smooth. While fine for the saturation curve, 
+% if you eventually switch to time-series data with sharp transitions (like 
+% the action potential mentioned in your research framing), this kernel 
+% might "over-smooth" the peak.
+
+%% Boundedness
+% Transform bounded observations into an unbounded latent space, fit a
+% standard GP, and then warp the predictions back.
+
+% In literature used probit function for transformation
+%Consider also Lineweaver-Burk space
+
+% Note that warping the output distorts the uncertainty bands. Uncertainty
+% will become asymmetric.
+
+%% Rejection Sampling
+% GPML's 'gp' function returns marginal variances. For sampling, we need the 
+% full covariance matrix K_post = K_** - K_*X (K_XX + sigma^2 I)^-1 K_X*
+
+% #region agent log
+agent_log_debug(agent_debug, 'H14', 'problems/michaelis_menten.m:289', 'Entering posterior sampling block', ...
+    struct('x_grid_len', numel(x_grid), 'n_samples', n_samples, ...
+    'planned_num_draws', 50000, 'session_mem_used_mb', matlab_mem_used_mb_after, ...
+    'session_mem_available_mb', matlab_mem_available_mb_after));
+% #endregion
+
+% Extract optimized hyperparameters
+ell = exp(hyp.cov(1));
+sf2 = exp(2 * hyp.cov(2));
+sn2 = exp(2 * hyp.lik);
+
+% Build covariance matrices manually for exact inference
+cov_build_t0 = tic;
+K_XX     = sf2 * exp(-0.5 * pdist2(x_train', x_train').^2 / ell^2);
+K_star_X = sf2 * exp(-0.5 * pdist2(x_grid', x_train').^2 / ell^2);
+K_star_star = sf2 * exp(-0.5 * pdist2(x_grid', x_grid').^2 / ell^2);
+cov_build_elapsed_sec = toc(cov_build_t0);
+
+% Calculate Posterior Mean and Covariance
+post_cov_t0 = tic;
+L = chol(K_XX + sn2 * eye(length(x_train)), 'lower');
+alpha = L' \ (L \ y_train');
+m_post = K_star_X * alpha;
+v_post = L \ K_star_X';
+Cov_post = K_star_star - v_post'*v_post;
+
+% Add tiny jitter for numerical stability during multivariate normal sampling
+Cov_post = Cov_post + 1e-6 * eye(length(x_grid));
+post_cov_elapsed_sec = toc(post_cov_t0);
+% #region agent log
+agent_log_debug(agent_debug, 'H15', 'problems/michaelis_menten.m:313', 'Posterior covariance built', ...
+    struct('cov_build_elapsed_sec', cov_build_elapsed_sec, ...
+    'post_cov_elapsed_sec', post_cov_elapsed_sec, ...
+    'cov_post_dim_1', size(Cov_post, 1), 'cov_post_dim_2', size(Cov_post, 2), ...
+    'cov_post_is_finite', all(isfinite(Cov_post(:)))));
+% #endregion
+
+% Rejection Sampling Loop
+num_draws = 50000; % Draw 50,000 candidate curves
+fprintf('Drawing %d sample paths from the posterior...\n', num_draws);
+
+% mvnrnd draws N samples from the multivariate normal distribution
+sampling_t0 = tic;
+f_samples = mvnrnd(m_post, Cov_post, num_draws);
+sampling_elapsed_sec = toc(sampling_t0);
+try
+    [sample_mem_view, ~] = memory;
+    sample_mem_used_mb = sample_mem_view.MemUsedMATLAB / 1e6;
+    sample_mem_available_mb = sample_mem_view.MemAvailableAllArrays / 1e6;
+catch
+    sample_mem_used_mb = NaN;
+    sample_mem_available_mb = NaN;
+end
+
+% REJECTION LOGIC: Keep only rows where EVERY point is >= 0 and <= Vmax
+valid_rows = all(f_samples >= 0, 2) & all(f_samples <= Vmax, 2);
+f_accepted = f_samples(valid_rows, :);
+
+n_accepted = size(f_accepted, 1);
+acceptance_rate = (n_accepted / num_draws) * 100;
+fprintf('Rejection Sampling Complete.\n');
+fprintf('Accepted: %d | Rejected: %d | Rate: %.4f%%\n', ...
+    n_accepted, num_draws - n_accepted, acceptance_rate);
+% #region agent log
+agent_log_debug(agent_debug, 'H16', 'problems/michaelis_menten.m:335', 'Sampling/rejection stats', ...
+    struct('num_draws', num_draws, 'sampling_elapsed_sec', sampling_elapsed_sec, ...
+    'n_accepted', n_accepted, 'acceptance_rate', acceptance_rate, ...
+    'sample_mem_used_mb', sample_mem_used_mb, 'sample_mem_available_mb', sample_mem_available_mb));
+% #endregion
+
+%% Visualization
+rejection_plot_t0 = tic;
+figure('Color', 'w', 'Position', [100, 100, 900, 600]);
+hold on; grid on;
+
+% Plot a few of the REJECTED samples (in light red) for context
+num_rejected_to_plot = min(10, num_draws - n_accepted);
+if num_rejected_to_plot > 0
+    f_rejected = f_samples(~valid_rows, :);
+    plot(x_grid, f_rejected(1:num_rejected_to_plot, :), 'r-', 'Color', [1 0.5 0.5 0.5], ...
+        'HandleVisibility', 'off');
+end
+
+% Plot the ACCEPTED samples (in green)
+num_accepted_to_plot = min(50, n_accepted);
+if num_accepted_to_plot > 0
+    plot(x_grid, f_accepted(1:num_accepted_to_plot, :), 'g-', 'Color', [0 0.8 0 0.3], ...
+        'HandleVisibility', 'off');
+end
+
+% Plot standard features
+plot(x_grid, m_post, 'k--', 'LineWidth', 2, 'DisplayName', 'Unconstrained Mean');
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground Truth');
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, 'DisplayName', 'Data');
+
+% Plot the absolute bounds
+yline(Vmax, 'k-', 'V_{max} Upper Bound', 'LineWidth', 2);
+yline(0, 'k-', '0 Lower Bound', 'LineWidth', 2);
+
+xlabel('Substrate Concentration [S]');
+ylabel('Velocity (v_0)');
+title(sprintf('Rejection Sampling: %d Accepted out of %d (%.2f%%)', n_accepted, num_draws, acceptance_rate));
+legend('Location', 'best');
+set(gca, 'FontSize', 12);
+ylim([-20, Vmax + 20]); % Expand axis slightly to see rejected curves
+rejection_plot_elapsed_sec = toc(rejection_plot_t0);
+% #region agent log
+agent_log_debug(agent_debug, 'H17', 'problems/michaelis_menten.m:372', 'Rejection plot timing and counts', ...
+    struct('rejection_plot_elapsed_sec', rejection_plot_elapsed_sec, ...
+    'num_rejected_to_plot', num_rejected_to_plot, 'num_accepted_to_plot', num_accepted_to_plot));
+% #endregion
+
+% #region agent log
+agent_log_debug(agent_debug, 'H19', 'problems/michaelis_menten.m:379', 'Script completed successfully', ...
+    struct('run_id', agent_debug.run_id, 'total_elapsed_sec', toc(script_t0)));
+% #endregion
