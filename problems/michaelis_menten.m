@@ -162,6 +162,12 @@ k   = 2;
 % and [S]=0.60), so the data tube is feasible but still binds.
 epsilon = 0.165;
 
+% Upper-tail counterpart to Eq. (13): y*(x_c) + k * s(x_c) <= y_max.
+% y_max is set to Vmax (defined in Section 1, line 5) -- the known MM
+% asymptote. In real applications without a known asymptote you'd pick
+% y_max from a separate physical or experimental bound.
+y_max = Vmax;
+
 % Warm start theta0 from the unconstrained NLML solution.
 theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
 
@@ -176,13 +182,13 @@ ub = [];
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
 objfun  = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-% Inequality constraints (Eqs. 13 and 14), stacked into a single c(theta) <= 0 vector.
-nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon);
+% Inequality constraints (Eq. 13 lower + new upper-tail + Eq. 14), stacked into one c(theta) <= 0 vector.
+nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon, y_max);
 
 opts = optimoptions('fmincon', 'Display', 'iter');
 
-fprintf('Running constrained optimization (fmincon). m=%d, k=%g, epsilon=%.4f, sn_floor=%.4f.\n', ...
-    m_constraint, k, epsilon, sn_floor);
+fprintf('Running constrained optimization (fmincon). m=%d, k=%g, epsilon=%.4f, y_max=%g, sn_floor=%.4f.\n', ...
+    m_constraint, k, epsilon, y_max, sn_floor);
 [theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlcon, opts);
 
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
@@ -221,7 +227,7 @@ plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
 yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlabel('[S] (mM)');
 ylabel('v_0 (\muM/s)');
-title(sprintf('Nonnegative-enforced (m=%d, k=%g, \\epsilon=%.2f)', m_constraint, k, epsilon));
+title(sprintf('Bounded (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
 ylim(ylim_unc);
@@ -275,13 +281,14 @@ hyp.cov = theta(1:2);
 hyp.lik = theta(3);
 end
 
-function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon)
-% Direct math-to-code translation of Pensoneault Eqs. (13) and (14).
+function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon, y_max)
+% Direct math-to-code translation of Pensoneault Eqs. (13) and (14),
+% plus the symmetric upper-tail bound y*(x_c) + k * s(x_c) <= y_max.
 % fmincon expects inequality constraints in the form c(theta) <= 0.
 
 hyp = theta_to_hyp(theta, hyp_tpl);
 
-% One GPML predictive call covers both constraint blocks: stack X_c and training x.
+% One GPML predictive call covers all three constraint blocks: stack X_c and training x.
 xstar = [X_c; x];
 [ymu, ys2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
 
@@ -292,9 +299,12 @@ y_star_xj = ymu(nC+1:end);                   % y*(x^(j))
 
 % Eq. (13): 0 <= y*(x_c) - k * s(x_c)   =>   c_nonneg = k * s(x_c) - y*(x_c) <= 0
 c_nonneg = k * s_xc - y_star_xc;
+% Upper-tail counterpart: y*(x_c) + k * s(x_c) <= y_max
+%   =>   c_upper = y*(x_c) + k * s(x_c) - y_max <= 0
+c_upper  = y_star_xc + k * s_xc - y_max;
 % Eq. (14): 0 <= epsilon - |y - y*(x)|  =>   c_data   = |y - y*(x)| - epsilon <= 0
 c_data   = abs(y - y_star_xj) - epsilon;
 
-c   = [c_nonneg; c_data];
+c   = [c_nonneg; c_upper; c_data];
 ceq = [];
 end
