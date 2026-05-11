@@ -143,9 +143,10 @@ f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 % (noisy predictive in GPML: ymu, sqrt(ys2)) at theta = (log_ell, log_sf, log_sn).
 
 % theta packs the hyperparameters as: [log(ell); log(sf); log(sn)].
-% Use the initial guess `hyp` (built earlier) as the template -- nothing here
-% depends on the unconstrained fit.
-hyp_tpl = hyp;
+% Warm start: use the unconstrained NLML solution as both the template and
+% the starting point. theta0 is therefore already in a well-conditioned
+% region for chol() inside GPML's infGaussLik.
+hyp_tpl = hyp_unc;
 
 % Eq. (13) ingredients: m=30 equally spaced constraint points across the domain;
 % k = inverse normal CDF at eta=2.2%, paper's approximation k=2.
@@ -154,11 +155,15 @@ X_c = linspace(0, max(x_grid), m_constraint)';
 eta = 0.022;
 k   = 2;
 
-% Eq. (14) ingredient: epsilon = .03.
-epsilon = .03;
+% Eq. (14) ingredient: epsilon = 0.165 muM/s.
+% Paper uses epsilon = 0.03 on a function of range ~1; rescaled to our
+% v_0 range of ~5.5 muM/s that is 0.03 * 5.5 ~ 0.165. This also sits at
+% about 1.5x the largest within-replicate deviation (0.110 at [S]=0.15
+% and [S]=0.60), so the data tube is feasible but still binds.
+epsilon = 0.165;
 
-% Start from the SAME initial guess as the unconstrained fit -- no warm start.
-theta0 = [hyp.cov(1); hyp.cov(2); hyp.lik(1)];
+% Warm start theta0 from the unconstrained NLML solution.
+theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
 
 % Lower bound on log(sigma_n) only. Stops fmincon from collapsing sigma_n
 % toward zero -- with replicates, the 21x21 kernel matrix has only 7 unique
