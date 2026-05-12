@@ -203,18 +203,20 @@ X_c = linspace(S_lo, max(x_grid), m_constraint)';
 eta = 0.022;
 k   = -sqrt(2) * erfinv(2*eta - 1); %def of invCDF(eta)
 
-% Eq. (14) ingredient: epsilon = 0.165 muM/s.
-% Paper uses epsilon = 0.03 on a function of range ~1; rescaled to our
-% v_0 range of ~5.5 muM/s that is 0.03 * 5.5 ~ 0.165. This also sits at
-% about 1.5x the largest within-replicate deviation (0.110 at [S]=0.15
-% and [S]=0.60), so the data tube is feasible but still binds.
-epsilon = 0.165;
+% Eq. (14) ingredient: epsilon widened for joint constraints (upper + data + mono).
+% Tighter values (e.g. 0.165 per paper rescale) bind hard with monotonicity on.
+epsilon = 0.5;
 
 % Upper-tail counterpart to Eq. (13): y*(x_c) + k * s(x_c) <= y_max.
 % y_max is set to Vmax (defined in Section 1, line 5) -- the known MM
 % asymptote. In real applications without a known asymptote you'd pick
 % y_max from a separate physical or experimental bound.
 y_max = Vmax;
+
+% Constraint toggles (nonnegative tail at X_c is always on when fmincon runs).
+% Set true to re-enable the Pensoneault upper tail at X_c or the epsilon data tube.
+enforce_upper_bound = true;
+enforce_data_fidelity = true;
 
 % If fmincon is infeasible or stagnates, the derivative tail can conflict with
 % tight epsilon / replicate fidelity; set false to use value-only constraints.
@@ -227,26 +229,29 @@ k_mono = [];
 % theta now includes the constant prior mean as a 4th entry (linear scale).
 theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1); hyp_unc.mean];
 
-% Lower bound on log(sigma_n) only. Stops fmincon from collapsing sigma_n
-% toward zero -- with replicates, the 21x21 kernel matrix has only 7 unique
-% inputs and becomes rank-deficient without the sigma_n^2 diagonal jitter,
-% which makes chol() inside GPML's infGaussLik fail.
+% Lower bound on log(sigma_n) only (see sn_floor below). Stops fmincon from collapsing
+% sigma_n toward zero -- with replicates, the kernel matrix has repeated inputs and
+% becomes rank-deficient without jitter, which makes chol() inside GPML fail.
 % log(ell), log(sf), and mu are left unbounded (-Inf / +Inf).
-sn_floor = 1e-3;
+% sn_floor above the unconstrained NLML optimum for sn (e.g. 0.745) stabilizes the
+% joint problem when upper bound + data fidelity + monotonicity are all enabled.
+sn_floor = 0.745;
 lb = [-Inf; -Inf; log(sn_floor); -Inf];
 ub = [];
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
 objfun  = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-% Inequality constraints (Eq. 13 lower + upper-tail + Eq. 14 + monotonicity on X_c), c(theta) <= 0.
-nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon, y_max, enforce_monotonicity, k_mono);
+% Inequality constraints: optional upper tail (y_max), optional data tube (epsilon),
+% nonnegative + monotonicity at X_c; see enforce_* flags above.
+nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon, y_max, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
 
 opts = optimoptions('fmincon', 'Display', 'iter', ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 
-fprintf(['Running constrained optimization (fmincon). m=%d, k=%g, epsilon=%.4f, y_max=%g, ', ...
-    'sn_floor=%.4f; monotonicity=%d (1=on: f'' lower tail at X_c, same k as Eq. 13).\n'], ...
-    m_constraint, k, epsilon, y_max, sn_floor, enforce_monotonicity);
+fprintf(['Running constrained optimization (fmincon). m=%d, k=%g, sn_floor=%.4f; ', ...
+    'upper=%d data_tube=%d mono=%d (epsilon=%.4f, y_max=%g when used).\n'], ...
+    m_constraint, k, sn_floor, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, epsilon, y_max);
 [theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlcon, opts);
 
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
@@ -259,8 +264,10 @@ x_lim_lo = min(S_lo, min(x_train(:)));
 
 %% Visualization: unconstrained vs constrained
 tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-if enforce_monotonicity
-    title(tlo, 'Michaelis-Menten GP: unconstrained vs bounded + monotone (Pensoneault-style)');
+if enforce_monotonicity && ~enforce_upper_bound && ~enforce_data_fidelity
+    title(tlo, 'Michaelis-Menten GP: unconstrained vs nonnegative + monotone (no V_{max} tail, no \epsilon tube)');
+elseif enforce_monotonicity
+    title(tlo, 'Michaelis-Menten GP: unconstrained vs constrained (see upper/data/mono flags)');
 else
     title(tlo, 'Michaelis-Menten GP: unconstrained vs bounded (value constraints only)');
 end
@@ -293,8 +300,10 @@ plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
 yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlabel('[S] (mM)');
 ylabel('v_0 (\muM/s)');
-if enforce_monotonicity
-    title(sprintf('Bounded + monotone (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
+if enforce_monotonicity && ~enforce_upper_bound && ~enforce_data_fidelity
+    title(sprintf('Nonneg + monotone (m=%d, k=%g)', m_constraint, k));
+elseif enforce_monotonicity
+    title(sprintf('Constrained (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
 else
     title(sprintf('Bounded (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
 end
@@ -398,34 +407,46 @@ q = sum(B.^2, 1).';             % diag(K_df * inv(Ky) * K_df')
 s2_deriv = max(k_dd_diag - q, 0);
 end
 
-function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon, y_max, enforce_monotonicity, k_mono)
-% Direct math-to-code translation of Pensoneault Eqs. (13) and (14),
-% plus the symmetric upper-tail bound y*(x_c) + k * s(x_c) <= y_max,
-% plus monotonicity: same (1-eta) one-sided tail as Eq. (13) on the derivative GP at X_c.
-% fmincon expects inequality constraints in the form c(theta) <= 0.
+function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon, y_max, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono)
+% Pensoneault-style inequalities c(theta) <= 0: nonnegative tail at X_c (Eq. 13 lower);
+% optional upper tail y*(x_c)+k*s<=y_max; optional data tube |y-y*|<=epsilon (Eq. 14);
+% optional monotonicity on f' at X_c. fmincon expects c <= 0.
 
 hyp = theta_to_hyp(theta, hyp_tpl);
 
-% One GPML predictive call covers value constraints: stack X_c and training x.
-xstar = [X_c; x];
+if nargin < 12 || isempty(enforce_upper_bound), enforce_upper_bound = true; end
+if nargin < 13 || isempty(enforce_data_fidelity), enforce_data_fidelity = true; end
+if nargin < 14 || isempty(enforce_monotonicity), enforce_monotonicity = true; end
+if nargin < 15 || isempty(k_mono), k_mono = k; end
+
+% GPML predictive: need training x in xstar only when the data-fidelity block is on.
+if enforce_data_fidelity
+    xstar = [X_c(:); x(:)];
+else
+    xstar = X_c(:);
+end
 [ymu, ys2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
 
 nC   = numel(X_c);
 y_star_xc = ymu(1:nC);                       % y*(x_c^(i))
 s_xc      = sqrt(max(ys2(1:nC), 0));         % s(x_c^(i))
-y_star_xj = ymu(nC+1:end);                   % y*(x^(j))
 
-% Eq. (13): 0 <= y*(x_c) - k * s(x_c)   =>   c_nonneg = k * s(x_c) - y*(x_c) <= 0
+% Eq. (13) lower: 0 <= y*(x_c) - k * s(x_c)   =>   c_nonneg = k * s(x_c) - y*(x_c) <= 0
 c_nonneg = k * s_xc - y_star_xc;
-% Upper-tail counterpart: y*(x_c) + k * s(x_c) <= y_max
-%   =>   c_upper = y*(x_c) + k * s(x_c) - y_max <= 0
-c_upper  = y_star_xc + k * s_xc - y_max;
-% Eq. (14): 0 <= epsilon - |y - y*(x)|  =>   c_data   = |y - y*(x)| - epsilon <= 0
-c_data   = abs(y - y_star_xj) - epsilon;
 
-c   = [c_nonneg; c_upper; c_data];
-if nargin < 12 || isempty(enforce_monotonicity), enforce_monotonicity = true; end
-if nargin < 13 || isempty(k_mono), k_mono = k; end
+c = c_nonneg(:);
+if enforce_upper_bound
+    % Upper-tail: y*(x_c) + k * s(x_c) <= y_max  =>  c_upper <= 0
+    c_upper = y_star_xc + k * s_xc - y_max;
+    c = [c; c_upper(:)];
+end
+if enforce_data_fidelity
+    y_star_xj = ymu(nC+1:end);               % y*(x^(j))
+    % Eq. (14): 0 <= epsilon - |y - y*(x)|  =>  c_data <= 0
+    c_data = abs(y - y_star_xj) - epsilon;
+    c = [c; c_data(:)];
+end
 if enforce_monotonicity
     % Monotonicity (increasing): posterior on f'(x_c) is Gaussian; same tail form as
     % Eq. (13) with optional k_mono (defaults to k): m_deriv - k_mono * s_deriv >= 0.
