@@ -11,41 +11,72 @@ Km   = 0.15;        % Michaelis constant (units of [S])
 mm_static = @(S) (Vmax .* S) ./ (Km + S); 
 
 
-%% 2. Replicate assay data ([S] in mM, v_0 in μM/s)
+%% 2. Training data ([S] in mM, v_0 in μM/s)
+% Uncomment exactly ONE block below: default assay | Option A (uniform) | Option B (half-step grid).
+% Synthetic knobs (Options A–B): set n_samples, S_lo, x_max, half_step, and noise_level_gp inside the block.
+% x_max = upper [S] (mM): sampling upper bound (A/B), x_grid / ground truth extent, and plot x-axis window.
+S_lo = 1e-6;
+x_max = 5;         % Overwritten in the default assay block; for A/B set explicitly.
+n_samples = 6;
+half_step = 0.015;   % Half of 0.03 mM (smallest spacing in the assay table); candidates S_lo : half_step : x_max.
+
+% ----- DEFAULT: experimental assay (table + replicates) -----
 % Table layout: [Substrate] (mM), Run 1–3 (v_0), mean, std. dev.
 % (0.15 mM row is near Km in the experiment; three runs plot as three y at the same x.)
+% S_mM = [0.00; 0.03; 0.07; 0.15; 0.30; 0.60; 1.50];
+% 
+% Y_runs = [ ...
+%     0.00, 0.00, 0.00; ...
+%     1.05, 0.98, 0.95; ...
+%     1.85, 1.96, 2.01; ...
+%     3.10, 2.95, 2.92; ...
+%     3.95, 4.10, 4.05; ...
+%     4.85, 4.70, 4.88; ...
+%     5.51, 5.40, 5.48];
+% 
+% %v0_mean = [0.00; 0.99; 1.94; 2.99; 4.03; 4.81; 5.46];
+% %v0_std  = [0.00; 0.05; 0.08; 0.09; 0.08; 0.10; 0.06];
+% v0_std = std(Y_runs, 0, 2);
+% 
+% n_unique_S = size(Y_runs, 1);
+% n_replicates = size(Y_runs, 2);
+% 
+% % Training vectors: each [S] repeated n_replicates times; y in run order per substrate
+% x_train = repelem(S_mM.', n_replicates);
+% y_train = reshape(permute(Y_runs, [2, 1]), 1, []);
+% 
+% % Sanity check vs. reported means (table means are rounded)
+% %calc_mean = mean(reshape(y_train, n_replicates, n_unique_S), 1)';
+% %assert(max(abs(calc_mean - v0_mean)) < 0.02);
+% 
+% % Initial GP observation noise scale (μM/s) from typical within-[S] spread
+% noise_level_gp = mean(v0_std(v0_std > 0));
+% x_max = max(2, max(S_mM) * 1.2);   % Upper [S] for sampling grid, ground truth, plots (assay span)
 
-S_mM = [0.00; 0.03; 0.07; 0.15; 0.30; 0.60; 1.50];
+% ----- OPTION A: uniform [S] on [S_lo, x_max], Gaussian noise on v_0 -----
+% Comment out the entire DEFAULT block above, then uncomment below.
+% noise_level_gp = 0.05;   % std dev of additive Gaussian noise on v_0 (μM/s); used by GP init (sn0) unchanged
+% rng(42);                 % optional reproducibility
+% x_train = linspace(S_lo, x_max, n_samples);
+% y_train = mm_static(x_train) + noise_level_gp .* randn(size(x_train));
+% n_unique_S = n_samples;
+% n_replicates = 1;
 
-Y_runs = [ ...
-    0.00, 0.00, 0.00; ...
-    1.05, 0.98, 0.95; ...
-    1.85, 1.96, 2.01; ...
-    3.10, 2.95, 2.92; ...
-    3.95, 4.10, 4.05; ...
-    4.85, 4.70, 4.88; ...
-    5.51, 5.40, 5.48];
-
-%v0_mean = [0.00; 0.99; 1.94; 2.99; 4.03; 4.81; 5.46];
-%v0_std  = [0.00; 0.05; 0.08; 0.09; 0.08; 0.10; 0.06];
-v0_std = std(Y_runs, 0, 2); 
-
-n_unique_S = size(Y_runs, 1);
-n_replicates = size(Y_runs, 2);
-
-% Training vectors: each [S] repeated n_replicates times; y in run order per substrate
-x_train = repelem(S_mM.', n_replicates);
-y_train = reshape(permute(Y_runs, [2, 1]), 1, []);
-
-% Sanity check vs. reported means (table means are rounded)
-%calc_mean = mean(reshape(y_train, n_replicates, n_unique_S), 1)';
-%assert(max(abs(calc_mean - v0_mean)) < 0.02);
-
-% Initial GP observation noise scale (μM/s) from typical within-[S] spread
-noise_level_gp = mean(v0_std(v0_std > 0));
+% ----- OPTION B: n_samples random [S] from half-step grid, Gaussian noise -----
+% Comment out the entire DEFAULT block above, then uncomment below.
+% Requires n_samples <= numel(S_lo:half_step:x_max); else widen x_max or shrink half_step.
+noise_level_gp = 0.10;
+rng(42);
+candidates = (S_lo:half_step:x_max).';
+assert(n_samples <= numel(candidates), 'Option B: n_samples exceeds grid size; adjust x_max or half_step.');
+idx = randperm(numel(candidates), n_samples);
+x_train = candidates(idx).';
+y_train = mm_static(x_train) + noise_level_gp .* randn(size(x_train));
+n_unique_S = n_samples;
+n_replicates = 1;
 
 %% 3. Ground truth curve on an [S] grid (mM)
-x_grid = linspace(1e-6, max(2, max(S_mM) * 1.2), 500);
+x_grid = linspace(S_lo, x_max, 500);
 y_true = mm_static(x_grid);
 
 %% 4. Visualization
@@ -214,6 +245,7 @@ ylabel('v_0 (\muM/s)');
 title('Unconstrained GPML (minimize NLML)');
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
+xlim([S_lo, x_max]);
 ylim_unc = ylim;
 
 nexttile;
@@ -231,6 +263,7 @@ title(sprintf('Bounded (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, 
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
 ylim(ylim_unc);
+xlim([S_lo, x_max]);
 
 fprintf('GP optimization complete.\n');
 fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f\n', ...
