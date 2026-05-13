@@ -154,13 +154,12 @@ sn0  = max(1e-3, noise_level_gp);
 
 % Initialize the GPML hyperparameter structure
 hyp = struct();
-hyp.mean = mean(y_train); % scalar warm-start for meanConst (~empirical mean of y)
+hyp.mean = [];              % @meanZero: no mean hyperparameters
 hyp.cov  = log([ell0; sf0]); 
 hyp.lik  = log(sn0);
 
-% Define GP components 
-% meanfunc = @meanZero;   % old default; swap back if you want a zero-mean prior
-meanfunc = @meanConst;
+% Define GP components
+meanfunc = @meanZero;
 %covfunc  = {@covMaterniso,5}; 
 covfunc = @covSEiso;
 likfunc = @likGauss;
@@ -185,7 +184,7 @@ f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 % y*(.) and s(.) are the GP posterior predictive mean and standard deviation
 % (noisy predictive in GPML: ymu, sqrt(ys2)) at theta = (log_ell, log_sf, log_sn).
 
-% theta packs the hyperparameters as: [log(ell); log(sf); log(sn)].
+% theta packs [log(ell); log(sf); log(sn)] (mean is fixed at zero via @meanZero).
 % Warm start: use the unconstrained NLML solution as both the template and
 % the starting point. theta0 is therefore already in a well-conditioned
 % region for chol() inside GPML's infGaussLik.
@@ -216,7 +215,7 @@ y_max = Vmax;
 % Constraint toggles (nonnegative tail at X_c is always on when fmincon runs).
 % Set true to re-enable the Pensoneault upper tail at X_c or the epsilon data tube.
 enforce_upper_bound = true;
-enforce_data_fidelity = true;
+enforce_data_fidelity = false;
 
 % If fmincon is infeasible or stagnates, the derivative tail can conflict with
 % tight epsilon / replicate fidelity; set false to use value-only constraints.
@@ -226,17 +225,16 @@ enforce_monotonicity = true;
 k_mono = [];
 
 % Warm start theta0 from the unconstrained NLML solution.
-% theta now includes the constant prior mean as a 4th entry (linear scale).
-theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1); hyp_unc.mean];
+theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
 
 % Lower bound on log(sigma_n) only (see sn_floor below). Stops fmincon from collapsing
 % sigma_n toward zero -- with replicates, the kernel matrix has repeated inputs and
 % becomes rank-deficient without jitter, which makes chol() inside GPML fail.
-% log(ell), log(sf), and mu are left unbounded (-Inf / +Inf).
+% log(ell) and log(sf) are left unbounded (-Inf / +Inf).
 % sn_floor above the unconstrained NLML optimum for sn (e.g. 0.745) stabilizes the
 % joint problem when upper bound + data fidelity + monotonicity are all enabled.
-sn_floor = 0.745;
-lb = [-Inf; -Inf; log(sn_floor); -Inf];
+sn_floor = 0.08;
+lb = [-Inf; -Inf; log(sn_floor)];
 ub = [];
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
@@ -313,19 +311,16 @@ ylim(ylim_unc);
 xlim([x_lim_lo, x_max]);
 
 fprintf('GP optimization complete.\n');
-fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), hyp_unc.mean, ...
+fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), ...
     gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col));
-fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
-    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), hyp_con.mean, ...
+fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
+    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), ...
     nlml_opt, exitflag);
 
 %% Encodings to try:
-% Non zero mean. Since MM kinetircs are strictly positive and approach
-% asymptote at Vmax, large gaps in data points may suffer from
-% prior-dominated corridor effect where the prediction will try to revert
-% to zero rather than staying near saturation plateau when zero mean is
-% used.
+% Zero-mean prior: MM curves are positive; sparse data can pull the posterior toward
+% zero between points. @meanConst is an alternative if that behavior is unwanted.
 
 % Hyperparameter initialization techniques:  $std(x)$ for the lengthscale 
 % ($\ell$) and $std(y)$ for the signal variance ($\sigma_f$) is a classic, 
@@ -355,18 +350,17 @@ fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f, mu=%.4f | NLML=%.4f | fminco
 % will become asymmetric.
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
-% Pack the flat vector theta = [log(ell); log(sf); log(sn); mu] into a GPML hyp struct.
-% mu is in linear space (no log) -- the constant prior mean can be any real number.
+% Pack theta = [log(ell); log(sf); log(sn)] into a GPML hyp struct (@meanZero).
 hyp = hyp_tpl;
 hyp.cov  = theta(1:2);
 hyp.lik  = theta(3);
-hyp.mean = theta(4);
+hyp.mean = [];
 end
 
 function [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, X_c)
-% Posterior predictive mean and variance of df/dx at each X_c under covSEiso + likGauss + meanConst.
+% Posterior predictive mean and variance of df/dx at each X_c under covSEiso + likGauss + meanZero.
 % Matches GPML covSEiso: k(x,z) = sf^2 * exp(-0.5*(x-z)^2/ell^2); hyp.cov = [log(ell); log(sf)],
-% hyp.lik = log(sn); mean is constant hyp.mean (zero derivative of the prior mean).
+% hyp.lik = log(sn); prior mean has zero derivative (flat m(x) => contributes 0 to f').
 %
 % Cross-covariance Cov[f'(x*), f(z)] = d/dx* k(x*,z) = -(x*-z)/ell^2 * k(x*,z).
 % Prior variance of derivative: Cov[f'(x*), f'(x*)] = sf^2/ell^2 (limit of second derivative form).
@@ -381,7 +375,11 @@ X_c = X_c(:);
 n = numel(x);
 m = numel(X_c);
 
-mu = hyp.mean;
+if isempty(hyp.mean)
+    mu = 0;
+else
+    mu = hyp.mean;
+end
 ytil = y - mu;
 
 % Training Gram Ky = K_ff + sn^2 I
