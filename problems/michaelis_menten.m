@@ -14,7 +14,7 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 %% 2. Training data ([S] in mM, v_0 in μM/s)
 % useTrial1Synthetic: false = experimental assay table; true = synthetic (pick trial below).
 useTrial1Synthetic = true;
-syntheticTrial = 1;       % 1 = Trial 1: n_uniform equispaced [S] on [0, x_max]. 2 = Trial 2: fixed x_train vector.
+syntheticTrial = 2;       % 1 = Trial 1: n_uniform equispaced [S] on [0, x_max]. 2 = Trial 2: fixed x_train vector.
 n_uniform = 3;            % Trial 1 only: number of uniform samples (linspace includes 0 and x_max).
 % Constraint grid sizes (value tails at X_c; monotonicity at X_c_mono) — used in %% Fit section.
 m_bounds = 30;
@@ -191,7 +191,7 @@ y_col = y_train(:);
 % --- Cholesky / PD diagnostics (set false to skip; see plan: debug Cholesky) ---
 debug_chol = true;
 sn_chol_floor = 1e-4;          % lower bound exp(hyp.lik) during fmincon (log(sn) >= log(sn_chol_floor))
-% Ky jitter for gp_seiso_deriv_pred / mm_min_eig_Ky_seiso is fixed at 1e-8 in those functions.
+% Optional Ky jitter in gp_seiso_deriv_pred is off for now (see commented line on Ky there).
 
 if debug_chol
     ndup = numel(x_col) - numel(unique(x_col));
@@ -269,12 +269,12 @@ y_max = Vmax;
 
 % Constraint toggles (nonnegative tail at X_c is always on when fmincon runs).
 % Set true to re-enable the Pensoneault upper tail at X_c or the epsilon data tube.
-enforce_upper_bound = true;
-enforce_data_fidelity = true;
+enforce_upper_bound = false;
+enforce_data_fidelity = false;
 
 % If fmincon is infeasible or stagnates, the derivative tail can conflict with
 % tight epsilon / replicate fidelity; set false to use value-only constraints.
-enforce_monotonicity = false;
+enforce_monotonicity = true;
 % Optional softer tail for derivative constraints only (empty = same k as values).
 % If fmincon reports joint infeasibility with monotonicity on, try e.g. k_mono = 0.65*k.
 k_mono = [];
@@ -459,7 +459,8 @@ ytil = y - mu;
 % Training Gram Ky = K_ff + sn^2 I
 dxx = (x - x.') ./ ell;
 K = sf2 * exp(-0.5 * dxx.^2);
-Ky = K + sn2 * eye(n) + 1e-8 * eye(n);   % jitter (match mm_min_eig_Ky_seiso)
+Ky = K + sn2 * eye(n);
+% Ky = Ky + 1e-8 * eye(n);   % optional stabilizing jitter for chol(Ky) (disabled)
 
 % Cross m x n: R(j,i) = X_c(j) - x(i)
 R = X_c - x.';
@@ -536,7 +537,7 @@ ceq = [];
 end
 
 function mn = mm_min_eig_Ky_seiso(hyp, x)
-% Smallest eigenvalue of sym(Ky) with same Ky as gp_seiso_deriv_pred (incl. 1e-8 diagonal jitter).
+% Smallest eigenvalue of sym(Ky) with same Ky as gp_seiso_deriv_pred (no extra jitter).
 x = x(:);
 ell = exp(hyp.cov(1));
 sf2 = exp(2 * hyp.cov(2));
@@ -544,7 +545,7 @@ sn2 = exp(2 * hyp.lik(1));
 n = numel(x);
 dxx = (x - x.') ./ ell;
 K = sf2 * exp(-0.5 * dxx.^2);
-Ky = K + sn2 * eye(n) + 1e-8 * eye(n);
+Ky = K + sn2 * eye(n);
 mn = min(real(eig((Ky + Ky') / 2)));
 end
 
