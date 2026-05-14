@@ -1,5 +1,5 @@
 % GP Research Project: Acute Transient Equation Sampling
-clear; clc; close all;
+%clear; clc; close all;
 
 %% 1. Define Realistic Parameters 
 % Parameters 
@@ -12,8 +12,10 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 
 %% 2. Training data ([S] in mM, v_0 in μM/s)
-% Toggle: false = experimental assay table; true = Trial 1 synthetic (see plan).
+% useTrial1Synthetic: false = experimental assay table; true = synthetic (pick trial below).
 useTrial1Synthetic = true;
+syntheticTrial = 1;       % 1 = Trial 1: n_uniform equispaced [S] on [0, x_max]. 2 = Trial 2: fixed x_train vector.
+n_uniform = 3;            % Trial 1 only: number of uniform samples (linspace includes 0 and x_max).
 % Constraint grid sizes (value tails at X_c; monotonicity at X_c_mono) — used in %% Fit section.
 m_bounds = 30;
 m_mono = 15;
@@ -25,19 +27,35 @@ n_samples = 12;
 half_step = 0.015;   % Half-step grid (Option B); candidates S_lo : half_step : x_max.
 
 if useTrial1Synthetic
-    % ----- Synthetic: fixed [S] (mM); Gaussian noise on v_0 except no draw at [S]=0 (exact 0,0) -----
-    x_train = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 1.8];
     x_max = 2;
     noise_level_gp = 0.10;
     rng(42);
-    y_clean = mm_static(x_train);
-    dz = zeros(size(x_train));
-    idx = abs(x_train) > 1e-12;
-    dz(idx) = noise_level_gp .* randn(1, sum(idx(:)));
-    y_train = y_clean + dz;
-    n_unique_S = numel(x_train);
-    n_samples = n_unique_S;
-    n_replicates = 1;
+    if syntheticTrial == 1
+        % ----- Trial 1: n_uniform equispaced [S] on [0, x_max]; Gaussian noise except no draw at [S]=0 (exact 0,0) -----
+        assert(n_uniform >= 2, 'Trial 1: n_uniform must be at least 2 for [0, x_max] endpoints.');
+        x_train = linspace(0, x_max, n_uniform);
+        y_clean = mm_static(x_train);
+        dz = zeros(size(x_train));
+        idx = abs(x_train) > 1e-12;
+        dz(idx) = noise_level_gp .* randn(1, sum(idx(:)));
+        y_train = y_clean + dz;
+        n_unique_S = n_uniform;
+        n_samples = n_uniform;
+        n_replicates = 1;
+    elseif syntheticTrial == 2
+        % ----- Trial 2: fixed [S] (mM); same noise rule as Trial 1 -----
+        x_train = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 1.8];
+        y_clean = mm_static(x_train);
+        dz = zeros(size(x_train));
+        idx = abs(x_train) > 1e-12;
+        dz(idx) = noise_level_gp .* randn(1, sum(idx(:)));
+        y_train = y_clean + dz;
+        n_unique_S = numel(x_train);
+        n_samples = n_unique_S;
+        n_replicates = 1;
+    else
+        error('michaelis_menten:syntheticTrial', 'syntheticTrial must be 1 (uniform n_uniform) or 2 (fixed x_train).');
+    end
 else
     % ----- DEFAULT: experimental assay (table + replicates) -----
     S_mM = [0.00; 0.03; 0.07; 0.15; 0.30; 0.60; 1.50];
@@ -58,7 +76,7 @@ else
     x_max = max(2, max(S_mM) * 1.2);
 end
 
-% ----- OPTION A / B (reference): set useTrial1Synthetic false for assay, or paste logic into a new branch. -----
+% ----- OPTION A / B (reference): set useTrial1Synthetic false for assay, or use syntheticTrial 1/2 above. -----
 % ----- OPTION A: uniform [S] on [0, x_max] (n_samples points), Gaussian noise on v_0 -----
 % Always includes (0, 0): equispaced linspace from 0 to x_max; no noise added at [S]=0 (matches Option B).
 % noise_level_gp = 0.10;   % std dev of additive Gaussian noise on v_0 (μM/s); used by GP init (sn0) unchanged
@@ -170,10 +188,45 @@ inffunc = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
+% --- Cholesky / PD diagnostics (set false to skip; see plan: debug Cholesky) ---
+debug_chol = true;
+sn_chol_floor = 1e-4;          % lower bound exp(hyp.lik) during fmincon (log(sn) >= log(sn_chol_floor))
+% Ky jitter for gp_seiso_deriv_pred / mm_min_eig_Ky_seiso is fixed at 1e-8 in those functions.
+
+if debug_chol
+    ndup = numel(x_col) - numel(unique(x_col));
+    xs = sort(x_col(:));
+    if numel(xs) > 1
+        dxmin = min(diff(xs));
+    else
+        dxmin = NaN;
+    end
+    fprintf(['[CHOL debug inputs] n=%d duplicate_rows=%d min_positive_diff(x)=%.6g\n'], ...
+        numel(x_col), ndup, dxmin);
+    if ndup > 0
+        warning('michaelis_menten:duplicateX', ...
+            'Duplicate training x values make K_ff rank-deficient; tiny sigma_n breaks chol.');
+    end
+end
+
 %  Hyperparameter Optimization (unconstrained baseline)
 % -100 specifies a maximum of 100 function evaluations
 fprintf('Optimizing hyperparameters (unconstrained NLML)...\n');
 hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+
+if debug_chol
+    fprintf('[CHOL debug hyp_unc] ell=%.6g sf=%.6g sn=%.6g (exp of log hyp)\n', ...
+        exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik(1)));
+    try
+        nlml_dbg = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+        fprintf('[CHOL debug hyp_unc] gp(NLML only) OK, NLML=%.6g\n', nlml_dbg);
+    catch ME
+        fprintf('[CHOL debug hyp_unc] gp(NLML) FAILED: %s\n', ME.message);
+        rethrow(ME);
+    end
+    mnKy = mm_min_eig_Ky_seiso(hyp_unc, x_col);
+    fprintf('[CHOL debug hyp_unc] min real eigenvalue of sym(Ky)=%.6g (<=0 => chol at risk)\n', mnKy);
+end
 
 [m_unc, s2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 f_upper_unc = m_unc + 2 * sqrt(max(s2_unc, 0));
@@ -216,30 +269,52 @@ y_max = Vmax;
 
 % Constraint toggles (nonnegative tail at X_c is always on when fmincon runs).
 % Set true to re-enable the Pensoneault upper tail at X_c or the epsilon data tube.
-enforce_upper_bound = false;
-enforce_data_fidelity = false;
+enforce_upper_bound = true;
+enforce_data_fidelity = true;
 
 % If fmincon is infeasible or stagnates, the derivative tail can conflict with
 % tight epsilon / replicate fidelity; set false to use value-only constraints.
-enforce_monotonicity = true;
+enforce_monotonicity = false;
 % Optional softer tail for derivative constraints only (empty = same k as values).
 % If fmincon reports joint infeasibility with monotonicity on, try e.g. k_mono = 0.65*k.
 k_mono = [];
 
+if debug_chol && enforce_monotonicity
+    try
+        gp_seiso_deriv_pred(hyp_unc, x_col, y_col, X_c_mono);
+        fprintf('[CHOL debug hyp_unc] gp_seiso_deriv_pred OK at unconstrained hyp.\n');
+    catch ME
+        fprintf('[CHOL debug hyp_unc] gp_seiso_deriv_pred FAILED: %s\n', ME.message);
+        rethrow(ME);
+    end
+end
+
 % Warm start theta0 from the unconstrained NLML solution.
 theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
-
-% No lower bound on log(sigma_n) (trial plan). With many replicate x rows, tiny sn can
-% still make chol() fail inside GPML; if that happens, reintroduce e.g. lb(3)=log(1e-3).
-lb = [-Inf; -Inf; -Inf];
+% Project warm start onto box (e.g. log(sn) floor) so first fmincon iter is feasible in bounds.
+lb = [-Inf; -Inf; log(sn_chol_floor)];
 ub = [];
+theta0 = max(theta0, lb);
+if ~all(isfinite(theta0))
+    error('michaelis_menten:theta0', 'theta0 has non-finite entries; check hyp_unc.');
+end
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
-objfun  = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+if debug_chol
+    objfun = @(theta) mm_gp_wrap_chol(objfun_inner, theta, hyp_tpl, x_col, 'objfun');
+else
+    objfun = objfun_inner;
+end
 % Inequality constraints: optional upper tail (y_max), optional data tube (epsilon),
 % nonnegative + monotonicity at X_c; see enforce_* flags above.
-nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+nonlcon_inner = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+if debug_chol
+    nonlcon = @(theta) mm_nonlcon_wrap_chol(nonlcon_inner, theta, hyp_tpl, x_col, 'nonlcon');
+else
+    nonlcon = nonlcon_inner;
+end
 
 opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, ...
@@ -384,7 +459,7 @@ ytil = y - mu;
 % Training Gram Ky = K_ff + sn^2 I
 dxx = (x - x.') ./ ell;
 K = sf2 * exp(-0.5 * dxx.^2);
-Ky = K + sn2 * eye(n);
+Ky = K + sn2 * eye(n) + 1e-8 * eye(n);   % jitter (match mm_min_eig_Ky_seiso)
 
 % Cross m x n: R(j,i) = X_c(j) - x(i)
 R = X_c - x.';
@@ -458,4 +533,47 @@ if enforce_monotonicity
     c = [c; c_mono];
 end
 ceq = [];
+end
+
+function mn = mm_min_eig_Ky_seiso(hyp, x)
+% Smallest eigenvalue of sym(Ky) with same Ky as gp_seiso_deriv_pred (incl. 1e-8 diagonal jitter).
+x = x(:);
+ell = exp(hyp.cov(1));
+sf2 = exp(2 * hyp.cov(2));
+sn2 = exp(2 * hyp.lik(1));
+n = numel(x);
+dxx = (x - x.') ./ ell;
+K = sf2 * exp(-0.5 * dxx.^2);
+Ky = K + sn2 * eye(n) + 1e-8 * eye(n);
+mn = min(real(eig((Ky + Ky') / 2)));
+end
+
+function v = mm_gp_wrap_chol(fun, theta, hyp_tpl, x, tag)
+try
+    v = fun(theta);
+catch ME
+    msgl = lower(ME.message);
+    if contains(msgl, 'chol') || contains(msgl, 'posdef') || contains(msgl, 'positive definite')
+        hyp_bad = theta_to_hyp(theta, hyp_tpl);
+        mnKy = mm_min_eig_Ky_seiso(hyp_bad, x);
+        fprintf(['[CHOL debug %s] %s\n  log(theta)=[%.6f; %.6f; %.6f]  ell,sf,sn=[%.6g %.6g %.6g]  min_eig(Ky)=%.6g\n'], ...
+            tag, ME.message, theta(1), theta(2), theta(3), exp(theta(1)), exp(theta(2)), exp(theta(3)), mnKy);
+    end
+    rethrow(ME);
+end
+end
+
+function [c, ceq] = mm_nonlcon_wrap_chol(fh, theta, hyp_tpl, x, tag)
+try
+    [c, ceq] = fh(theta);
+catch ME
+    msgl = lower(ME.message);
+    if contains(msgl, 'chol') || contains(msgl, 'posdef') || contains(msgl, 'positive definite')
+        hyp_bad = theta_to_hyp(theta, hyp_tpl);
+        mnKy = mm_min_eig_Ky_seiso(hyp_bad, x);
+        fprintf(['[CHOL debug %s] %s\n  log(theta)=[%.6f; %.6f; %.6f]  ell,sf,sn=[%.6g %.6g %.6g]  min_eig(Ky)=%.6g\n'], ...
+            tag, ME.message, theta(1), theta(2), theta(3), exp(theta(1)), exp(theta(2)), exp(theta(3)), mnKy);
+    end
+    rethrow(ME);
+end
 end
