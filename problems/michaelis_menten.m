@@ -12,51 +12,54 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 
 %% 2. Training data ([S] in mM, v_0 in μM/s)
-% Uncomment exactly ONE block below: default assay | Option A (uniform) | Option B (half-step grid).
-% Synthetic knobs (Options A–B): set n_samples, S_lo, x_max, half_step, and noise_level_gp inside the block.
-% x_max = upper [S] (mM): sampling upper bound (A/B), x_grid / ground truth extent, and plot x-axis window.
+% Toggle: false = experimental assay table; true = Trial 1 synthetic (see plan).
+useTrial1Synthetic = true;
+% Constraint grid sizes (value tails at X_c; monotonicity at X_c_mono) — used in %% Fit section.
+m_bounds = 30;
+m_mono = 15;
+
+% x_max = upper [S] (mM): sampling upper bound (synthetic), x_grid / ground truth extent, and plot window.
 S_lo = 1e-6;
-x_max = 2;         % Overwritten in the default assay block; for A/B set explicitly.
+x_max = 2;
 n_samples = 12;
-half_step = 0.015;   % Half of 0.03 mM (smallest spacing in the assay table); candidates S_lo : half_step : x_max.
+half_step = 0.015;   % Half-step grid (Option B); candidates S_lo : half_step : x_max.
 
-% ----- DEFAULT: experimental assay (table + replicates) -----
-% Table layout: [Substrate] (mM), Run 1–3 (v_0), mean, std. dev.
-% (0.15 mM row is near Km in the experiment; three runs plot as three y at the same x.)
-S_mM = [0.00; 0.03; 0.07; 0.15; 0.30; 0.60; 1.50];
-%S_mM = [0.00; 0.15; 0.30; 0.60; 1.50];
+if useTrial1Synthetic
+    % ----- Synthetic: fixed [S] (mM); Gaussian noise on v_0 except no draw at [S]=0 (exact 0,0) -----
+    x_train = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 1.8];
+    x_max = 2;
+    noise_level_gp = 0.10;
+    rng(42);
+    y_clean = mm_static(x_train);
+    dz = zeros(size(x_train));
+    idx = abs(x_train) > 1e-12;
+    dz(idx) = noise_level_gp .* randn(1, sum(idx(:)));
+    y_train = y_clean + dz;
+    n_unique_S = numel(x_train);
+    n_samples = n_unique_S;
+    n_replicates = 1;
+else
+    % ----- DEFAULT: experimental assay (table + replicates) -----
+    S_mM = [0.00; 0.03; 0.07; 0.15; 0.30; 0.60; 1.50];
+    Y_runs = [ ...
+        0.00, 0.00, 0.00; ...
+        1.05, 0.98, 0.95; ...
+        1.85, 1.96, 2.01; ...
+        3.10, 2.95, 2.92; ...
+        3.95, 4.10, 4.05; ...
+        4.85, 4.70, 4.88; ...
+        5.51, 5.40, 5.48];
+    v0_std = std(Y_runs, 0, 2);
+    n_unique_S = size(Y_runs, 1);
+    n_replicates = size(Y_runs, 2);
+    x_train = repelem(S_mM.', n_replicates);
+    y_train = reshape(permute(Y_runs, [2, 1]), 1, []);
+    noise_level_gp = mean(v0_std(v0_std > 0));
+    x_max = max(2, max(S_mM) * 1.2);
+end
 
-
-Y_runs = [ ...
-    0.00, 0.00, 0.00; ...
-    1.05, 0.98, 0.95; ...
-    1.85, 1.96, 2.01; ...
-    3.10, 2.95, 2.92; ...
-    3.95, 4.10, 4.05; ...
-    4.85, 4.70, 4.88; ...
-    5.51, 5.40, 5.48];
-
-%v0_mean = [0.00; 0.99; 1.94; 2.99; 4.03; 4.81; 5.46];
-%v0_std  = [0.00; 0.05; 0.08; 0.09; 0.08; 0.10; 0.06];
-v0_std = std(Y_runs, 0, 2);
-
-n_unique_S = size(Y_runs, 1);
-n_replicates = size(Y_runs, 2);
-
-% Training vectors: each [S] repeated n_replicates times; y in run order per substrate
-x_train = repelem(S_mM.', n_replicates);
-y_train = reshape(permute(Y_runs, [2, 1]), 1, []);
-
-% Sanity check vs. reported means (table means are rounded)
-%calc_mean = mean(reshape(y_train, n_replicates, n_unique_S), 1)';
-%assert(max(abs(calc_mean - v0_mean)) < 0.02);
-
-% Initial GP observation noise scale (μM/s) from typical within-[S] spread
-noise_level_gp = mean(v0_std(v0_std > 0));
-x_max = max(2, max(S_mM) * 1.2);   % Upper [S] for sampling grid, ground truth, plots (assay span)
-
+% ----- OPTION A / B (reference): set useTrial1Synthetic false for assay, or paste logic into a new branch. -----
 % ----- OPTION A: uniform [S] on [0, x_max] (n_samples points), Gaussian noise on v_0 -----
-% Comment out the entire DEFAULT block above, then uncomment below.
 % Always includes (0, 0): equispaced linspace from 0 to x_max; no noise added at [S]=0 (matches Option B).
 % noise_level_gp = 0.10;   % std dev of additive Gaussian noise on v_0 (μM/s); used by GP init (sn0) unchanged
 % rng(42);                 % optional reproducibility
@@ -67,7 +70,6 @@ x_max = max(2, max(S_mM) * 1.2);   % Upper [S] for sampling grid, ground truth, 
 % n_replicates = 1;
 
 % ----- OPTION B: n_samples random [S] from half-step grid, Gaussian noise -----
-% Comment out the entire DEFAULT block above, then uncomment below.
 % Always includes (0, 0); remaining n_samples-1 are drawn without replacement from grid nodes with [S] > 0.
 % Requires n_samples >= 1 and n_samples-1 <= numel(nonzero grid nodes); else widen x_max or shrink half_step.
 % noise_level_gp = 0.10;
@@ -190,15 +192,15 @@ f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 % region for chol() inside GPML's infGaussLik.
 hyp_tpl = hyp_unc;
 
-% Eq. (13) ingredients: m=30 equally spaced constraint points across the domain;
+% Eq. (13) ingredients: m_bounds value-tail points; m_mono derivative (monotonicity) points.
 % k = inverse normal CDF at eta=2.2%, paper's approximation k=2.
 % Use S_lo (not 0) as the left end: if training includes [S]=0 (Options A/B or assay),
 % xstar = [X_c; x] in pens_constraints must not repeat the same x (GPML chol on predictive cov).
-% Monotonicity (same X_c, same k): posterior on latent slope f' is Gaussian; require
-% m_deriv(x_c) - k * s_deriv(x_c) >= 0 (equivalently k * s_deriv - m_deriv <= 0), matching
+% Monotonicity at X_c_mono: posterior on latent slope f' is Gaussian; require
+% m_deriv - k * s_deriv >= 0 (equivalently k * s_deriv - m_deriv <= 0), matching
 % the one-sided tail used for the nonnegative value bound in Eq. (13).
-m_constraint = 30;
-X_c = linspace(S_lo, max(x_grid), m_constraint)';
+X_c = linspace(S_lo, max(x_grid), m_bounds)';
+X_c_mono = linspace(S_lo, max(x_grid), m_mono)';
 eta = 0.022;
 k   = -sqrt(2) * erfinv(2*eta - 1); %def of invCDF(eta)
 
@@ -214,7 +216,7 @@ y_max = Vmax;
 
 % Constraint toggles (nonnegative tail at X_c is always on when fmincon runs).
 % Set true to re-enable the Pensoneault upper tail at X_c or the epsilon data tube.
-enforce_upper_bound = true;
+enforce_upper_bound = false;
 enforce_data_fidelity = false;
 
 % If fmincon is infeasible or stagnates, the derivative tail can conflict with
@@ -227,29 +229,26 @@ k_mono = [];
 % Warm start theta0 from the unconstrained NLML solution.
 theta0 = [hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)];
 
-% Lower bound on log(sigma_n) only (see sn_floor below). Stops fmincon from collapsing
-% sigma_n toward zero -- with replicates, the kernel matrix has repeated inputs and
-% becomes rank-deficient without jitter, which makes chol() inside GPML fail.
-% log(ell) and log(sf) are left unbounded (-Inf / +Inf).
-% sn_floor above the unconstrained NLML optimum for sn (e.g. 0.745) stabilizes the
-% joint problem when upper bound + data fidelity + monotonicity are all enabled.
-sn_floor = 0.08;
-lb = [-Inf; -Inf; log(sn_floor)];
+% No lower bound on log(sigma_n) (trial plan). With many replicate x rows, tiny sn can
+% still make chol() fail inside GPML; if that happens, reintroduce e.g. lb(3)=log(1e-3).
+lb = [-Inf; -Inf; -Inf];
 ub = [];
 
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
 objfun  = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 % Inequality constraints: optional upper tail (y_max), optional data tube (epsilon),
 % nonnegative + monotonicity at X_c; see enforce_* flags above.
-nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, k, epsilon, y_max, ...
+nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
 
-opts = optimoptions('fmincon', 'Display', 'iter', ...
+opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
+    'EnableFeasibilityMode', true, ...
+    'Display', 'iter', ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 
-fprintf(['Running constrained optimization (fmincon). m=%d, k=%g, sn_floor=%.4f; ', ...
+fprintf(['Running constrained optimization (fmincon). m_bounds=%d m_mono=%d, k=%g; ', ...
     'upper=%d data_tube=%d mono=%d (epsilon=%.4f, y_max=%g when used).\n'], ...
-    m_constraint, k, sn_floor, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, epsilon, y_max);
+    m_bounds, m_mono, k, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, epsilon, y_max);
 [theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], lb, ub, nonlcon, opts);
 
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
@@ -299,11 +298,11 @@ yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlabel('[S] (mM)');
 ylabel('v_0 (\muM/s)');
 if enforce_monotonicity && ~enforce_upper_bound && ~enforce_data_fidelity
-    title(sprintf('Nonneg + monotone (m=%d, k=%g)', m_constraint, k));
+    title(sprintf('Nonneg + monotone (m_{val}=%d, m_{mono}=%d, k=%g)', m_bounds, m_mono, k));
 elseif enforce_monotonicity
-    title(sprintf('Constrained (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
+    title(sprintf('Constrained (m_{val}=%d, m_{mono}=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_bounds, m_mono, k, epsilon, y_max));
 else
-    title(sprintf('Bounded (m=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_constraint, k, epsilon, y_max));
+    title(sprintf('Bounded (m_{val}=%d, m_{mono}=%d, k=%g, \\epsilon=%.2f, y_{max}=%g)', m_bounds, m_mono, k, epsilon, y_max));
 end
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
@@ -405,18 +404,18 @@ q = sum(B.^2, 1).';             % diag(K_df * inv(Ky) * K_df')
 s2_deriv = max(k_dd_diag - q, 0);
 end
 
-function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, k, epsilon, y_max, ...
+function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono)
 % Pensoneault-style inequalities c(theta) <= 0: nonnegative tail at X_c (Eq. 13 lower);
 % optional upper tail y*(x_c)+k*s<=y_max; optional data tube |y-y*|<=epsilon (Eq. 14);
-% optional monotonicity on f' at X_c. fmincon expects c <= 0.
+% optional monotonicity on f' at X_c_mono (or X_c if X_c_mono is empty). fmincon expects c <= 0.
 
 hyp = theta_to_hyp(theta, hyp_tpl);
 
-if nargin < 12 || isempty(enforce_upper_bound), enforce_upper_bound = true; end
-if nargin < 13 || isempty(enforce_data_fidelity), enforce_data_fidelity = true; end
-if nargin < 14 || isempty(enforce_monotonicity), enforce_monotonicity = true; end
-if nargin < 15 || isempty(k_mono), k_mono = k; end
+if nargin < 14 || isempty(enforce_upper_bound), enforce_upper_bound = true; end
+if nargin < 15 || isempty(enforce_data_fidelity), enforce_data_fidelity = true; end
+if nargin < 16 || isempty(enforce_monotonicity), enforce_monotonicity = true; end
+if nargin < 17 || isempty(k_mono), k_mono = k; end
 
 % GPML predictive: need training x in xstar only when the data-fidelity block is on.
 if enforce_data_fidelity
@@ -446,9 +445,14 @@ if enforce_data_fidelity
     c = [c; c_data(:)];
 end
 if enforce_monotonicity
-    % Monotonicity (increasing): posterior on f'(x_c) is Gaussian; same tail form as
+    if isempty(X_c_mono)
+        Xg = X_c(:);
+    else
+        Xg = X_c_mono(:);
+    end
+    % Monotonicity (increasing): posterior on f'(x) is Gaussian; same tail form as
     % Eq. (13) with optional k_mono (defaults to k): m_deriv - k_mono * s_deriv >= 0.
-    [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, X_c);
+    [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, Xg);
     s_deriv = sqrt(max(s2_deriv, 0));
     c_mono = k_mono .* s_deriv - m_deriv;
     c = [c; c_mono];
