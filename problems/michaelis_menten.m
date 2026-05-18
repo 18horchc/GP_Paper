@@ -202,6 +202,12 @@ if ~all(isfinite(theta0))
     error('michaelis_menten:theta0', 'theta0 has non-finite entries; check hyp_unc.');
 end
 
+[c0, ~] = pens_constraints(theta0, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+fprintf('theta0 max constraint violation = %.6g\n', max(c0));
+fprintf('theta0: ell=%.4f sf=%.4f sn=%.4f\n', exp(theta0(1)), exp(theta0(2)), exp(theta0(3)));
+
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
 objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 if debug_chol
