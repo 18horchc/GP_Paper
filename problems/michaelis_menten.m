@@ -208,6 +208,24 @@ end
 fprintf('theta0 max constraint violation = %.6g\n', max(c0));
 fprintf('theta0: ell=%.4f sf=%.4f sn=%.4f\n', exp(theta0(1)), exp(theta0(2)), exp(theta0(3)));
 
+% Random search in hyp box: is any theta feasible (max(c) <= 0)?
+nTry = 5000;
+best_v = inf;
+best_theta = nan(3, 1);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = pens_constraints(theta_try, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+        x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+    v_try = max(c_try);
+    if v_try < best_v
+        best_v = v_try;
+        best_theta = theta_try;
+    end
+end
+fprintf('Best random max(c) = %.6g\n', best_v);
+fprintf('Best random theta: ell=%.4f sf=%.4f sn=%.4f\n', exp(best_theta(1)), exp(best_theta(2)), exp(best_theta(3)));
+
 % Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
 objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 if debug_chol
