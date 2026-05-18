@@ -99,7 +99,7 @@ hyp.lik  = log(sn0);
 
 % Hyperparameter box (constrained fmincon only)
 ell_bounds_lo = 0.02;
-ell_ub = 10;
+ell_ub = 4;
 sf_bounds  = [0.1, 12];
 sn_bounds  = [0.05, 2.5];
 
@@ -123,10 +123,6 @@ y_col = y_train(:);
 %% 1. Fit unconstrained GP
 fprintf('Optimizing hyperparameters (unconstrained NLML, GPML minimize)...\n');
 hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-
-[m_unc, s2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
-f_upper_unc = m_unc + 2 * sqrt(max(s2_unc, 0));
-f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 
 %% 2. Build constraints
 % Pensoneault tails on latent f: fmu - k*sqrt(fs2) >= 0, fmu + k*sqrt(fs2) <= Vmax; f' tail on X_c.
@@ -255,12 +251,29 @@ v_final = max(c_final);
 in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
 fprintf('Final max(c) = %.6g (feasible if <= 0) | in hyp box: %d\n', v_final, in_box);
 
-%% 4. Plot unconstrained vs constrained
-[m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
-f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
-f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
+[~, ys2_Xc, fmu_Xc, fs2_Xc] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c);
+sf_Xc = sqrt(max(fs2_Xc(:), 0));
+sy_Xc = sqrt(max(ys2_Xc(:), 0));
+fprintf('Upper tail on X_c at constrained optimum (eta=%.3g, k=%.4f):\n', eta, k);
+fprintf('  latent max(fmu + k*sf - Vmax) = %.6g (<=0 if constraint satisfied)\n', max(fmu_Xc + k * sf_Xc - y_max));
+fprintf('  obs    max(fmu + k*sy - Vmax) = %.6g (may exceed 0; not constrained)\n', max(fmu_Xc + k * sy_Xc - y_max));
+
+%% 4. Plot unconstrained vs constrained (latent f credible bands: fmu +/- k*sqrt(fs2))
+[~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
+m_unc = fmu_unc(:);
+sd_unc = sqrt(max(fs2_unc(:), 0));
+f_upper_unc = m_unc + k * sd_unc;
+f_lower_unc = m_unc - k * sd_unc;
+
+[~, ~, fmu_con, fs2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
+m_con = fmu_con(:);
+sd_con = sqrt(max(fs2_con(:), 0));
+f_upper_con = m_con + k * sd_con;
+f_lower_con = m_con - k * sd_con;
+fprintf('Plot band on x_grid: max latent upper = %.4f (Vmax=%g)\n', max(f_upper_con), Vmax);
 
 x_lim_lo = 0;
+band_label = sprintf('~%.0f%% credible interval (latent f)', 100 * (1 - eta));
 tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=%g, latent bounds)', ell_ub), ...
     'Interpreter', 'none');
@@ -268,8 +281,8 @@ title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=
 nexttile;
 hold on; grid on;
 fill([x_grid, fliplr(x_grid)], [f_upper_unc', fliplr(f_lower_unc')], [0.75, 0.75, 0.78], ...
-    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
-plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
+    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', band_label);
+plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean (latent f)');
 plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
 plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
@@ -285,8 +298,8 @@ ylim_unc = ylim;
 nexttile;
 hold on; grid on;
 fill([x_grid, fliplr(x_grid)], [f_upper_con', fliplr(f_lower_con')], [0.55, 0.72, 0.55], ...
-    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
-plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
+    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', band_label);
+plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean (latent f)');
 plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
 plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
