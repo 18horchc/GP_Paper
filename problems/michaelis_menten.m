@@ -286,6 +286,8 @@ in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
 fprintf('Final max(c) = %.6g (feasible if <= 0)\n', v_final);
 fprintf('Final in hyp box: %d\n', in_box);
 fprintf('fmincon exitflag = %d (%s)\n', exitflag, output.message);
+mm_report_binding_diagnostics(theta_opt, c_final, hyp_lb, hyp_ub, numel(X_c), numel(X_c_mono), ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, numel(x_col));
 [m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
 f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
@@ -524,4 +526,69 @@ catch ME
     end
     rethrow(ME);
 end
+end
+
+function mm_report_binding_diagnostics(theta, c_final, hyp_lb, hyp_ub, nC, nMono, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, nData, active_tol)
+% Report which Pensoneault constraint families and hyp-box bounds are active at theta.
+% c_final block order must match pens_constraints: lower, upper (opt), data (opt), mono (opt).
+if nargin < 11 || isempty(active_tol)
+    active_tol = 1e-5;
+end
+
+nExp = nC;
+if enforce_upper_bound
+    nExp = nExp + nC;
+end
+if enforce_data_fidelity
+    nExp = nExp + nData;
+end
+if enforce_monotonicity
+    nExp = nExp + nMono;
+end
+assert(numel(c_final) == nExp, ...
+    'mm_report_binding_diagnostics: expected %d constraints, got %d.', nExp, numel(c_final));
+
+fprintf('\nBinding diagnostics (active_tol=%g):\n', active_tol);
+idx = 0;
+
+lower_c = c_final(idx + (1:nC));
+idx = idx + nC;
+fprintf('  lower: max(c)=%.8g, near_active=%d\n', max(lower_c), sum(lower_c > -active_tol));
+
+if enforce_upper_bound
+    upper_c = c_final(idx + (1:nC));
+    idx = idx + nC;
+    fprintf('  upper: max(c)=%.8g, near_active=%d\n', max(upper_c), sum(upper_c > -active_tol));
+end
+
+if enforce_data_fidelity
+    data_c = c_final(idx + (1:nData));
+    idx = idx + nData;
+    fprintf('  data:  max(c)=%.8g, near_active=%d\n', max(data_c), sum(data_c > -active_tol));
+end
+
+if enforce_monotonicity
+    mono_c = c_final(idx + (1:nMono));
+    idx = idx + nMono;
+    fprintf('  mono:  max(c)=%.8g, near_active=%d\n', max(mono_c), sum(mono_c > -active_tol));
+end
+
+ell = exp(theta(1));
+sf  = exp(theta(2));
+sn  = exp(theta(3));
+ell_b = [exp(hyp_lb(1)), exp(hyp_ub(1))];
+sf_b  = [exp(hyp_lb(2)), exp(hyp_ub(2))];
+sn_b  = [exp(hyp_lb(3)), exp(hyp_ub(3))];
+
+fprintf('Hyperparameter box (physical units):\n');
+fprintf('  ell=%.4f  bounds [%.4f, %.4f]\n', ell, ell_b(1), ell_b(2));
+fprintf('  sf =%.4f  bounds [%.4f, %.4f]\n', sf, sf_b(1), sf_b(2));
+fprintf('  sn =%.4f  bounds [%.4f, %.4f]\n', sn, sn_b(1), sn_b(2));
+fprintf('  ell at lower bound: %d\n', double(abs(theta(1) - hyp_lb(1)) < active_tol));
+fprintf('  ell at upper bound: %d\n', double(abs(theta(1) - hyp_ub(1)) < active_tol));
+fprintf('  sf  at lower bound: %d\n', double(abs(theta(2) - hyp_lb(2)) < active_tol));
+fprintf('  sf  at upper bound: %d\n', double(abs(theta(2) - hyp_ub(2)) < active_tol));
+fprintf('  sn  at lower bound: %d\n', double(abs(theta(3) - hyp_lb(3)) < active_tol));
+fprintf('  sn  at upper bound: %d\n', double(abs(theta(3) - hyp_ub(3)) < active_tol));
 end
