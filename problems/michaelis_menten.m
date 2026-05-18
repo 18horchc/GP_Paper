@@ -179,6 +179,7 @@ if debug_chol && enforce_monotonicity
 end
 
 objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+obj_con = objfun_inner;   % NLML for ranking feasible random starts
 if debug_chol
     objfun = @(theta) mm_gp_wrap_chol(objfun_inner, theta, hyp_tpl, x_col, 'objfun');
 else
@@ -196,8 +197,11 @@ opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'Display', 'iter', ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 
-%% 3. Random search for feasible theta
+%% 3. Random search for feasible theta (multi-start pool)
 nTry = 5000;
+nMultistart = 10;   % run fmincon from up to this many feasible starts (best by NLML)
+feasible_starts = zeros(3, 0);
+feasible_vals = [];
 best_v = inf;
 best_theta = nan(3, 1);
 fprintf('Random search in hyp box (%d trials)...\n', nTry);
@@ -211,11 +215,16 @@ for t = 1:nTry
         best_v = v_try;
         best_theta = theta_try;
     end
+    if v_try <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        feasible_vals = [feasible_vals, v_try];
+    end
 end
+fprintf('Number feasible random starts: %d out of %d\n', size(feasible_starts, 2), nTry);
 fprintf('Best random max(c) = %.6g\n', best_v);
 fprintf('Best random theta: ell=%.4f sf=%.4f sn=%.4f\n', exp(best_theta(1)), exp(best_theta(2)), exp(best_theta(3)));
 
-%% 4. Choose fmincon start (feasible random if found, else projected unconstrained)
+%% 4. Choose fmincon starts (top feasible by NLML, else projected unconstrained)
 theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
 [c_unc_box, ~] = pens_constraints(theta_unc_box, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
@@ -223,24 +232,49 @@ theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb
 fprintf('Projected unconstrained start: max(c) = %.6g, ell=%.4f sf=%.4f sn=%.4f\n', ...
     max(c_unc_box), exp(theta_unc_box(1)), exp(theta_unc_box(2)), exp(theta_unc_box(3)));
 
-if best_v <= 0
-    theta0 = best_theta;
-    fprintf('Using feasible random start for fmincon (max(c) = %.6g).\n', best_v);
+nFeas = size(feasible_starts, 2);
+if nFeas > 0
+    nlml_feas = nan(nFeas, 1);
+    for j = 1:nFeas
+        nlml_feas(j) = obj_con(feasible_starts(:, j));
+    end
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+    fprintf('Multi-start: using %d feasible starts (lowest NLML first).\n', size(starts_for_fmincon, 2));
 else
-    theta0 = theta_unc_box;
-    fprintf('No feasible random start found; using projected unconstrained start.\n');
-end
-if ~all(isfinite(theta0))
-    error('michaelis_menten:theta0', 'theta0 has non-finite entries.');
+    starts_for_fmincon = theta_unc_box;
+    fprintf('No feasible random start; using projected unconstrained start only.\n');
 end
 
-%% 5. Run constrained NLML optimization
+%% 5. Run constrained NLML optimization (multi-start fmincon)
 fprintf(['Running constrained fmincon. |X_c|=%d |X_c_mono|=%d, k=%.4f; ', ...
     'L=0 U=%g; upper=%d data_tube=%d mono=%d.\n'], ...
     numel(X_c), numel(X_c_mono), k, y_max, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
 fprintf(['  hyp box: ell [%.3g,%.3g], sf [%.3g,%.3g], sn [%.3g,%.3g].\n'], ...
     ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
-[theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
+
+nStarts = size(starts_for_fmincon, 2);
+best_nlml = inf;
+theta_opt = nan(3, 1);
+nlml_opt = nan;
+exitflag = -99;
+output = struct('message', 'no fmincon run');
+
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    fprintf('fmincon start %d/%d: ell=%.4f sf=%.4f sn=%.4f\n', j, nStarts, ...
+        exp(theta0_j(1)), exp(theta0_j(2)), exp(theta0_j(3)));
+    [theta_j, nlml_j, ef_j, out_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
+    fprintf('  -> NLML=%.4f exitflag=%d\n', nlml_j, ef_j);
+    if nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml_opt = nlml_j;
+        exitflag = ef_j;
+        output = out_j;
+    end
+end
+fprintf('Best multi-start NLML=%.4f (start index with lowest NLML among %d runs).\n', nlml_opt, nStarts);
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
 
 %% 6. Check final feasibility, box, and exitflag
