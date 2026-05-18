@@ -97,12 +97,11 @@ hyp.mean = [];              % @meanZero: no mean hyperparameters
 hyp.cov  = log([ell0; sf0]);
 hyp.lik  = log(sn0);
 
-% Hyperparameter box (constrained fmincon only)
-ell_bounds = [0.02, 4];
+% Hyperparameter box (constrained fmincon only; ell upper swept in sensitivity loop)
+ell_bounds_lo = 0.02;
+ell_ub_sweep = [10, 15, 20, 30];
 sf_bounds  = [0.1, 12];
 sn_bounds  = [0.05, 2.5];
-hyp_lb = log([ell_bounds(1); sf_bounds(1); sn_bounds(1)]);
-hyp_ub = log([ell_bounds(2); sf_bounds(2); sn_bounds(2)]);
 
 % Define GP components
 meanfunc = @meanZero;
@@ -194,149 +193,68 @@ else
 end
 opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, ...
-    'Display', 'iter', ...
+    'Display', 'off', ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
-
-%% 3. Random search for feasible theta (multi-start pool)
 nTry = 5000;
-nMultistart = 10;   % run fmincon from up to this many feasible starts (best by NLML)
-feasible_starts = zeros(3, 0);
-feasible_vals = [];
-best_v = inf;
-best_theta = nan(3, 1);
-fprintf('Random search in hyp box (%d trials)...\n', nTry);
-for t = 1:nTry
-    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
-    [c_try, ~] = pens_constraints(theta_try, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-        x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
-        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-    v_try = max(c_try);
-    if v_try < best_v
-        best_v = v_try;
-        best_theta = theta_try;
+nMultistart = 10;
+active_tol = 1e-5;
+
+nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+cfg = struct('hyp_unc', hyp_unc, 'hyp_tpl', hyp_tpl, 'inffunc', inffunc, 'meanfunc', meanfunc, ...
+    'covfunc', covfunc, 'likfunc', likfunc, 'objfun', objfun, 'obj_con', obj_con, 'nonlcon', nonlcon, ...
+    'x_col', x_col, 'y_col', y_col, 'X_c', X_c, 'X_c_mono', X_c_mono, 'k', k, 'epsilon', epsilon, ...
+    'y_max', y_max, 'enforce_upper_bound', enforce_upper_bound, ...
+    'enforce_data_fidelity', enforce_data_fidelity, 'enforce_monotonicity', enforce_monotonicity, ...
+    'k_mono', k_mono, 'sf_bounds', sf_bounds, 'sn_bounds', sn_bounds, 'nTry', nTry, ...
+    'nMultistart', nMultistart, 'opts', opts, 'active_tol', active_tol, ...
+    'nlml_unc', nlml_unc, 'x_grid', x_grid, 'y_true', y_true, 'Vmax', Vmax);
+
+%% 3–6. Length-scale upper-bound sensitivity (constrained pipeline per ell_ub)
+fprintf('\n=== Length-scale upper-bound sensitivity ===\n');
+fprintf('Random design: rng(42) per ell_ub case (common unit-cube draws, mapped through each box).\n');
+sens = [];
+theta_prev = [];
+for i = 1:numel(ell_ub_sweep)
+    fprintf('\n--- ell upper = %g (%d/%d) ---\n', ell_ub_sweep(i), i, numel(ell_ub_sweep));
+    out_i = mm_constrained_ell_ub_run(ell_ub_sweep(i), ell_bounds_lo, cfg, theta_prev);
+    if isempty(sens)
+        sens = out_i;
+    else
+        sens(i) = out_i;
     end
-    if v_try <= 0
-        feasible_starts = [feasible_starts, theta_try];
-        feasible_vals = [feasible_vals, v_try];
-    end
+    theta_prev = sens(i).theta_opt;
 end
-fprintf('Number feasible random starts: %d out of %d\n', size(feasible_starts, 2), nTry);
-fprintf('Best random max(c) = %.6g\n', best_v);
-fprintf('Best random theta: ell=%.4f sf=%.4f sn=%.4f\n', exp(best_theta(1)), exp(best_theta(2)), exp(best_theta(3)));
+mm_print_ell_ub_sensitivity_table(sens, ell_ub_sweep);
 
-%% 4. Choose fmincon starts (top feasible by NLML, else projected unconstrained)
-theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
-[c_unc_box, ~] = pens_constraints(theta_unc_box, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
-    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-fprintf('Projected unconstrained start: max(c) = %.6g, ell=%.4f sf=%.4f sn=%.4f\n', ...
-    max(c_unc_box), exp(theta_unc_box(1)), exp(theta_unc_box(2)), exp(theta_unc_box(3)));
-
-nFeas = size(feasible_starts, 2);
-if nFeas > 0
-    nlml_feas = nan(nFeas, 1);
-    for j = 1:nFeas
-        nlml_feas(j) = obj_con(feasible_starts(:, j));
-    end
-    [~, ord] = sort(nlml_feas, 'ascend');
-    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
-    fprintf('Multi-start: using %d feasible starts (lowest NLML first).\n', size(starts_for_fmincon, 2));
-else
-    starts_for_fmincon = theta_unc_box;
-    fprintf('No feasible random start; using projected unconstrained start only.\n');
-end
-
-%% 5. Run constrained NLML optimization (multi-start fmincon)
-fprintf(['Running constrained fmincon. |X_c|=%d |X_c_mono|=%d, k=%.4f; ', ...
-    'L=0 U=%g; upper=%d data_tube=%d mono=%d.\n'], ...
-    numel(X_c), numel(X_c_mono), k, y_max, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
-fprintf(['  hyp box: ell [%.3g,%.3g], sf [%.3g,%.3g], sn [%.3g,%.3g].\n'], ...
-    ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
-
-nStarts = size(starts_for_fmincon, 2);
-best_nlml = inf;
-theta_opt = nan(3, 1);
-nlml_opt = nan;
-exitflag = -99;
-output = struct('message', 'no fmincon run');
-
-for j = 1:nStarts
-    theta0_j = starts_for_fmincon(:, j);
-    fprintf('fmincon start %d/%d: ell=%.4f sf=%.4f sn=%.4f\n', j, nStarts, ...
-        exp(theta0_j(1)), exp(theta0_j(2)), exp(theta0_j(3)));
-    [theta_j, nlml_j, ef_j, out_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
-    fprintf('  -> NLML=%.4f exitflag=%d\n', nlml_j, ef_j);
-    if nlml_j < best_nlml
-        best_nlml = nlml_j;
-        theta_opt = theta_j;
-        nlml_opt = nlml_j;
-        exitflag = ef_j;
-        output = out_j;
-    end
-end
-fprintf('Best multi-start NLML=%.4f (start index with lowest NLML among %d runs).\n', nlml_opt, nStarts);
+% Use ell_ub = 4 case for plots and detailed binding diagnostics
+idx_plot = 1;
+theta_opt = sens(idx_plot).theta_opt;
+nlml_opt = sens(idx_plot).nlml_opt;
+exitflag = sens(idx_plot).exitflag;
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
-
-%% 6. Check final feasibility, box, and exitflag
 [c_final, ~] = pens_constraints(theta_opt, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-v_final = max(c_final);
-in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
+v_final = sens(idx_plot).max_c_final;
+hyp_lb = sens(idx_plot).hyp_lb;
+hyp_ub = sens(idx_plot).hyp_ub;
+ell_bounds = sens(idx_plot).ell_bounds;
+in_box = sens(idx_plot).in_box;
+
+fprintf('\n=== Baseline plot case (ell upper = %g) ===\n', ell_ub_sweep(idx_plot));
 fprintf('Final max(c) = %.6g (feasible if <= 0)\n', v_final);
 fprintf('Final in hyp box: %d\n', in_box);
-fprintf('fmincon exitflag = %d (%s)\n', exitflag, output.message);
+fprintf('fmincon exitflag = %d (%s)\n', exitflag, sens(idx_plot).fmincon_message);
 mm_report_binding_diagnostics(theta_opt, c_final, hyp_lb, hyp_ub, numel(X_c), numel(X_c_mono), ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, numel(x_col));
-[m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
-f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
-f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
 
 x_lim_lo = 0;
-
-%% Visualization: unconstrained vs constrained (baseline)
-tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(tlo, sprintf('Michaelis-Menten GP baseline: unconstrained vs constrained (L=0, U=%g, f'' >= 0; no data tube)', y_max), ...
-    'Interpreter', 'none');
-
-nexttile;
-hold on; grid on;
-fill([x_grid, fliplr(x_grid)], [f_upper_unc', fliplr(f_lower_unc')], [0.75, 0.75, 0.78], ...
-    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
-plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
-plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
-plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
-    'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
-yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
-xlabel('[S] (mM)');
-ylabel('v_0 (\muM/s)');
-title('Unconstrained GPML (minimize NLML)');
-legend('Location', 'southeast');
-set(gca, 'FontSize', 11);
-xlim([x_lim_lo, x_max]);
-ylim_unc = ylim;
-
-nexttile;
-hold on; grid on;
-fill([x_grid, fliplr(x_grid)], [f_upper_con', fliplr(f_lower_con')], [0.55, 0.72, 0.55], ...
-    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
-plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
-plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
-plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
-    'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
-yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
-xlabel('[S] (mM)');
-ylabel('v_0 (\muM/s)');
-title(sprintf('Constrained (|X_c|=%d, k=%.3f, L=0, U=%g, mono)', numel(X_c), k, y_max));
-legend('Location', 'southeast');
-set(gca, 'FontSize', 11);
-ylim(ylim_unc);
-xlim([x_lim_lo, x_max]);
+ylim_unc = mm_plot_ell_ub_sensitivity_grid(sens, ell_ub_sweep, x_grid, y_true, x_train, y_train, ...
+    m_unc, s2_unc, f_upper_unc, f_lower_unc, x_lim_lo, x_max, Vmax, n_train, noise_sd_true);
 
 fprintf('GP optimization complete.\n');
 fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), ...
-    gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col));
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), ...
     nlml_opt, exitflag);
@@ -591,4 +509,264 @@ fprintf('  sf  at lower bound: %d\n', double(abs(theta(2) - hyp_lb(2)) < active_
 fprintf('  sf  at upper bound: %d\n', double(abs(theta(2) - hyp_ub(2)) < active_tol));
 fprintf('  sn  at lower bound: %d\n', double(abs(theta(3) - hyp_lb(3)) < active_tol));
 fprintf('  sn  at upper bound: %d\n', double(abs(theta(3) - hyp_ub(3)) < active_tol));
+end
+
+function out = mm_constrained_ell_ub_run(ell_ub_max, ell_lo, cfg, theta_prev)
+% Full constrained pipeline for one ell upper bound: random search, multi-start fmincon, metrics.
+if nargin < 4
+    theta_prev = [];
+end
+ell_bounds = [ell_lo, ell_ub_max];
+hyp_lb = log([ell_bounds(1); cfg.sf_bounds(1); cfg.sn_bounds(1)]);
+hyp_ub = log([ell_bounds(2); cfg.sf_bounds(2); cfg.sn_bounds(2)]);
+
+nC = numel(cfg.X_c);
+nMono = numel(cfg.X_c_mono);
+nData = numel(cfg.x_col);
+
+feasible_starts = zeros(3, 0);
+best_v = inf;
+best_feas_nlml = inf;
+best_feas_theta = nan(3, 1);
+best_feas_max_c = NaN;
+fprintf('  Random search (%d trials), ell in [%.3g, %.3g]...\n', cfg.nTry, ell_bounds(1), ell_bounds(2));
+% Common unit-cube design: same U(0,1)^3 draws each case, mapped through this ell_ub box.
+rng(42);
+for t = 1:cfg.nTry
+    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = pens_constraints(theta_try, cfg.hyp_tpl, cfg.inffunc, cfg.meanfunc, cfg.covfunc, ...
+        cfg.likfunc, cfg.x_col, cfg.y_col, cfg.X_c, cfg.X_c_mono, cfg.k, cfg.epsilon, cfg.y_max, ...
+        cfg.enforce_upper_bound, cfg.enforce_data_fidelity, cfg.enforce_monotonicity, cfg.k_mono);
+    v_try = max(c_try);
+    if v_try < best_v
+        best_v = v_try;
+    end
+    if v_try <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = cfg.obj_con(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+            best_feas_max_c = v_try;
+        end
+    end
+end
+nFeas = size(feasible_starts, 2);
+fprintf('  Feasible random starts: %d / %d\n', nFeas, cfg.nTry);
+if nFeas > 0
+    fprintf('  Best feasible pre-fmincon: NLML=%.4f max(c)=%.6g ell=%.4f sf=%.4f sn=%.4f\n', ...
+        best_feas_nlml, best_feas_max_c, exp(best_feas_theta(1)), exp(best_feas_theta(2)), exp(best_feas_theta(3)));
+else
+    fprintf('  No feasible random start (best_feas metrics set to NaN).\n');
+end
+
+theta_unc_box = min(max([cfg.hyp_unc.cov(1); cfg.hyp_unc.cov(2); cfg.hyp_unc.lik(1)], hyp_lb), hyp_ub);
+if nFeas > 0
+    nlml_feas = nan(nFeas, 1);
+    for j = 1:nFeas
+        nlml_feas(j) = cfg.obj_con(feasible_starts(:, j));
+    end
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(cfg.nMultistart, nFeas)));
+else
+    starts_for_fmincon = theta_unc_box;
+end
+if ~isempty(theta_prev)
+    theta_cont = min(max(theta_prev(:), hyp_lb), hyp_ub);
+    starts_for_fmincon = mm_prepend_unique_start(starts_for_fmincon, theta_cont, 1e-6);
+    fprintf('  Prepended continuation warm start from previous ell_ub solution.\n');
+end
+
+best_nlml = inf;
+theta_opt = nan(3, 1);
+nlml_opt = nan;
+exitflag = -99;
+fmincon_output = struct('message', 'no fmincon run');
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    [theta_j, nlml_j, ef_j, out_j] = fmincon(cfg.objfun, starts_for_fmincon(:, j), [], [], [], [], ...
+        hyp_lb, hyp_ub, cfg.nonlcon, cfg.opts);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml_opt = nlml_j;
+        exitflag = ef_j;
+        fmincon_output = out_j;
+    end
+end
+
+if ~isfinite(best_nlml)
+  if nFeas > 0
+    theta_opt = best_feas_theta;
+  else
+    theta_opt = theta_unc_box;
+  end
+  nlml_opt = cfg.obj_con(theta_opt);
+  exitflag = -99;
+  fmincon_output = struct('message', 'no successful fmincon run; using fallback theta');
+  fprintf('  Warning: no successful fmincon run; using fallback theta for diagnostics.\n');
+end
+
+[c_final, ~] = pens_constraints(theta_opt, cfg.hyp_tpl, cfg.inffunc, cfg.meanfunc, cfg.covfunc, ...
+    cfg.likfunc, cfg.x_col, cfg.y_col, cfg.X_c, cfg.X_c_mono, cfg.k, cfg.epsilon, cfg.y_max, ...
+    cfg.enforce_upper_bound, cfg.enforce_data_fidelity, cfg.enforce_monotonicity, cfg.k_mono);
+cmx = mm_c_family_maxes(c_final, nC, nMono, nData, cfg.enforce_upper_bound, ...
+    cfg.enforce_data_fidelity, cfg.enforce_monotonicity);
+hyp_con_run = theta_to_hyp(theta_opt, cfg.hyp_tpl);
+[m_con, s2_con] = gp(hyp_con_run, cfg.inffunc, cfg.meanfunc, cfg.covfunc, cfg.likfunc, ...
+    cfg.x_col, cfg.y_col, cfg.x_grid(:));
+
+out = struct();
+out.ell_ub_max = ell_ub_max;
+out.ell_bounds = ell_bounds;
+out.hyp_lb = hyp_lb;
+out.hyp_ub = hyp_ub;
+out.theta_opt = theta_opt(:);
+out.ell_opt = exp(theta_opt(1));
+out.sf_opt = exp(theta_opt(2));
+out.sn_opt = exp(theta_opt(3));
+out.ell_ratio = out.ell_opt / ell_ub_max;
+out.nlml_opt = nlml_opt;
+out.delta_nlml = nlml_opt - cfg.nlml_unc;
+out.exitflag = exitflag;
+out.fmincon_message = mm_fmincon_message(fmincon_output);
+out.max_c_final = max(c_final);
+out.lower_max_c = cmx.lower;
+out.upper_max_c = cmx.upper;
+out.mono_max_c = cmx.mono;
+out.n_feasible = nFeas;
+out.n_try = cfg.nTry;
+out.ell_at_ub = double(abs(theta_opt(1) - hyp_ub(1)) < cfg.active_tol);
+out.in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
+out.m_con = m_con(:);
+out.s2_con = s2_con(:);
+out.best_feas_nlml = NaN;
+out.best_feas_max_c = NaN;
+out.best_feas_ell = NaN;
+out.best_feas_sf = NaN;
+out.best_feas_sn = NaN;
+if nFeas > 0
+    out.best_feas_nlml = best_feas_nlml;
+    out.best_feas_max_c = best_feas_max_c;
+    out.best_feas_ell = exp(best_feas_theta(1));
+    out.best_feas_sf = exp(best_feas_theta(2));
+    out.best_feas_sn = exp(best_feas_theta(3));
+end
+end
+
+function msg = mm_fmincon_message(fmincon_output)
+if isstruct(fmincon_output) && isfield(fmincon_output, 'message')
+    msg = char(fmincon_output.message);
+else
+    msg = '';
+end
+end
+
+function cmx = mm_c_family_maxes(c_final, nC, nMono, nData, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity)
+idx = 0;
+cmx.lower = max(c_final(idx + (1:nC)));
+idx = idx + nC;
+if enforce_upper_bound
+    cmx.upper = max(c_final(idx + (1:nC)));
+    idx = idx + nC;
+else
+    cmx.upper = NaN;
+end
+if enforce_data_fidelity
+    cmx.data = max(c_final(idx + (1:nData)));
+    idx = idx + nData;
+else
+    cmx.data = NaN;
+end
+if enforce_monotonicity
+    cmx.mono = max(c_final(idx + (1:nMono)));
+else
+    cmx.mono = NaN;
+end
+end
+
+function mm_print_ell_ub_sensitivity_table(sens, ell_ub_sweep)
+fprintf('\nLength-scale upper-bound sensitivity summary (post-fmincon):\n');
+fprintf('%-6s %7s %6s %7s %7s %10s %10s %5s %10s %10s %10s %10s %12s %5s\n', ...
+    'ell_ub', 'ell_opt', 'e/e_ub', 'sf_opt', 'sn_opt', 'NLML', 'dNLML', 'exit', ...
+    'max_c', 'low_max', 'up_max', 'mono_max', 'n_feas/nTry', 'e@ub');
+for i = 1:numel(sens)
+    fprintf('%-6.0f %7.4f %6.3f %7.4f %7.4f %10.4f %10.4f %5d %10.6g %10.6g %10.6g %10.6g %5d/%-5d %5d\n', ...
+        ell_ub_sweep(i), sens(i).ell_opt, sens(i).ell_ratio, sens(i).sf_opt, sens(i).sn_opt, ...
+        sens(i).nlml_opt, sens(i).delta_nlml, sens(i).exitflag, sens(i).max_c_final, ...
+        sens(i).lower_max_c, sens(i).upper_max_c, sens(i).mono_max_c, ...
+        sens(i).n_feasible, sens(i).n_try, sens(i).ell_at_ub);
+end
+fprintf('\nBest feasible random start before fmincon:\n');
+fprintf('%-6s %10s %10s %7s %7s %7s\n', 'ell_ub', 'bf_NLML', 'bf_max_c', 'bf_ell', 'bf_sf', 'bf_sn');
+for i = 1:numel(sens)
+    fprintf('%-6.0f %10.4f %10.6g %7.4f %7.4f %7.4f\n', ell_ub_sweep(i), sens(i).best_feas_nlml, ...
+        sens(i).best_feas_max_c, sens(i).best_feas_ell, sens(i).best_feas_sf, sens(i).best_feas_sn);
+end
+end
+
+function starts = mm_prepend_unique_start(starts, theta_new, dedupe_tol)
+% Prepend theta_new as first column unless already present (log-space norm).
+theta_new = theta_new(:);
+if isempty(starts)
+    starts = theta_new;
+    return;
+end
+for j = 1:size(starts, 2)
+    if norm(starts(:, j) - theta_new) < dedupe_tol
+        return;
+    end
+end
+starts = [theta_new, starts];
+end
+
+function ylim_unc = mm_plot_ell_ub_sensitivity_grid(sens, ell_ub_sweep, x_grid, y_true, x_train, y_train, ...
+    m_unc, s2_unc, f_upper_unc, f_lower_unc, x_lim_lo, x_max, Vmax, n_train, noise_sd_true)
+% 2x3 grid: unconstrained + constrained posteriors for ell_ub = 4,6,8,10.
+tlo = tiledlayout(2, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(tlo, 'ell_{ub} sensitivity: unconstrained vs constrained posteriors', 'Interpreter', 'none');
+
+nexttile(1);
+hold on; grid on;
+fill([x_grid, fliplr(x_grid)], [f_upper_unc', fliplr(f_lower_unc')], [0.75, 0.75, 0.78], ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.5);
+plot(x_grid, m_unc, 'k--', 'LineWidth', 2);
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5);
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 5);
+yline(Vmax, 'k:', 'Alpha', 0.5);
+xlabel('[S] (mM)');
+ylabel('v_0 (\muM/s)');
+title('Unconstrained', 'Interpreter', 'none');
+set(gca, 'FontSize', 10);
+xlim([x_lim_lo, x_max]);
+ylim_unc = ylim;
+
+tile_pos = [2, 3, 5, 6];
+for k = 1:numel(ell_ub_sweep)
+    r = sens(k);
+    f_upper = r.m_con + 2 * sqrt(max(r.s2_con, 0));
+    f_lower = r.m_con - 2 * sqrt(max(r.s2_con, 0));
+    nexttile(tile_pos(k));
+    hold on; grid on;
+    fill([x_grid, fliplr(x_grid)], [f_upper', fliplr(f_lower')], [0.55, 0.72, 0.55], ...
+        'EdgeColor', 'none', 'FaceAlpha', 0.5);
+    plot(x_grid, r.m_con, 'k--', 'LineWidth', 2);
+    plot(x_grid, y_true, 'b-', 'LineWidth', 1.5);
+    plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 5);
+    yline(Vmax, 'k:', 'Alpha', 0.5);
+    xlabel('[S] (mM)');
+    ylabel('v_0 (\muM/s)');
+    title(sprintf('ell_{ub}=%g: ell=%.3f NLML=%.2f e@ub=%d', ell_ub_sweep(k), r.ell_opt, r.nlml_opt, r.ell_at_ub), ...
+        'Interpreter', 'none');
+    set(gca, 'FontSize', 10);
+    ylim(ylim_unc);
+    xlim([x_lim_lo, x_max]);
+end
+
+nexttile(4);
+axis off;
+text(0.1, 0.85, 'Shared ylim from unconstrained', 'Units', 'normalized', 'FontSize', 10);
+text(0.1, 0.70, sprintf('Data: n=%d, \\sigma=%.2g', n_train, noise_sd_true), 'Units', 'normalized', 'FontSize', 10);
+text(0.1, 0.55, 'Blue: MM truth; dashed: GP mean', 'Units', 'normalized', 'FontSize', 10);
+text(0.1, 0.40, 'Continuation warm start between ell_{ub} cases', 'Units', 'normalized', 'FontSize', 10);
 end
