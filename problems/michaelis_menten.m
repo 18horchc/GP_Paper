@@ -1,5 +1,5 @@
 % GP Research Project: Acute Transient Equation Sampling
-%clear; clc; close all;
+clear; clc; close all;
 
 %% 1. Define Realistic Parameters 
 % Parameters 
@@ -12,10 +12,10 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 
 %% 2. Training data ([S] in mM, v_0 in μM/s)
-% Baseline: n_train uniform [S] on [0, x_max]; additive noise N(0, (0.10*Vmax)^2) on every point.
+% Baseline: n_train uniform [S] on [0, x_max]; additive noise N(0, (noise_frac*Vmax)^2) on every point.
 n_train = 10;
 x_max = 2;              % upper [S] (mM): sampling, ground truth, and plot extent
-noise_frac = 0.10;      % sigma = noise_frac * Vmax
+noise_frac = 0.05;      % sigma = noise_frac * Vmax
 
 % Baseline constraint grid: X_c = {0, 0.02, ..., x_max} (~101 points).
 constraint_step = 0.02;
@@ -87,22 +87,22 @@ catch
 end
 
 % Configuration & Initial Hyperparameters
+% Unconstrained: GPML minimize (no box). Constrained: fmincon with hyp_lb/hyp_ub below.
+ell0 = std(x_train);
+sf0  = std(y_train);
+sn0  = max(1e-3, noise_sd_true);
+
+hyp = struct();
+hyp.mean = [];              % @meanZero: no mean hyperparameters
+hyp.cov  = log([ell0; sf0]);
+hyp.lik  = log(sn0);
+
+% Hyperparameter box (constrained fmincon only)
 ell_bounds = [0.02, 4];
 sf_bounds  = [0.1, 12];
 sn_bounds  = [0.05, 2.5];
 hyp_lb = log([ell_bounds(1); sf_bounds(1); sn_bounds(1)]);
 hyp_ub = log([ell_bounds(2); sf_bounds(2); sn_bounds(2)]);
-
-ell0 = min(max(std(x_train), ell_bounds(1)), ell_bounds(2));
-sf0  = min(max(std(y_train), sf_bounds(1)), sf_bounds(2));
-sn0  = min(max(noise_sd_true, sn_bounds(1)), sn_bounds(2));
-
-% Initialize the GPML hyperparameter structure (log-space; within box)
-hyp = struct();
-hyp.mean = [];              % @meanZero: no mean hyperparameters
-hyp.cov  = log([ell0; sf0]);
-hyp.lik  = log(sn0);
-hyp_tpl_init = hyp;
 
 % Define GP components
 meanfunc = @meanZero;
@@ -134,22 +134,9 @@ if debug_chol
     end
 end
 
-% Hyperparameter optimization (unconstrained NLML), box: ell, sf, sn in hyp_lb/hyp_ub
-theta0_unc = min(max([hyp.cov(1); hyp.cov(2); hyp.lik(1)], hyp_lb), hyp_ub);
-objfun_unc_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl_init), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-if debug_chol
-    objfun_unc = @(theta) mm_gp_wrap_chol(objfun_unc_inner, theta, hyp_tpl_init, x_col, 'objfun_unc');
-else
-    objfun_unc = objfun_unc_inner;
-end
-opts_unc = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
-    'Display', 'final', 'MaxFunctionEvaluations', 5000, 'MaxIterations', 1000);
-fprintf(['Optimizing hyperparameters (unconstrained NLML, fmincon). ', ...
-    'ell in [%.3g,%.3g], sf in [%.3g,%.3g], sn in [%.3g,%.3g].\n'], ...
-    ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
-[theta_unc, ~, exitflag_unc] = fmincon(objfun_unc, theta0_unc, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
-hyp_unc = theta_to_hyp(theta_unc, hyp_tpl_init);
-fprintf('Unconstrained fmincon exitflag=%d\n', exitflag_unc);
+% Hyperparameter optimization (unconstrained NLML, unbounded)
+fprintf('Optimizing hyperparameters (unconstrained NLML, GPML minimize)...\n');
+hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 
 if debug_chol
     fprintf('[CHOL debug hyp_unc] ell=%.6g sf=%.6g sn=%.6g (exp of log hyp)\n', ...
@@ -240,6 +227,8 @@ opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
 fprintf(['Running constrained optimization (fmincon). |X_c|=%d |X_c_mono|=%d, k=%.4f; ', ...
     'L=0 U=%g; upper=%d data_tube=%d mono=%d.\n'], ...
     numel(X_c), numel(X_c_mono), k, y_max, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+fprintf(['  hyp box: ell [%.3g,%.3g], sf [%.3g,%.3g], sn [%.3g,%.3g].\n'], ...
+    ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
 [theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
 
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
@@ -251,8 +240,8 @@ x_lim_lo = 0;
 
 %% Visualization: unconstrained vs constrained (baseline)
 tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(tlo, sprintf(['Michaelis-Menten GP baseline: unconstrained vs constrained ', ...
-    '(L=0, U=%g, f''\\ge0; no data tube)'], y_max));
+title(tlo, sprintf('Michaelis-Menten GP baseline: unconstrained vs constrained (L=0, U=%g, f'' >= 0; no data tube)', y_max), ...
+    'Interpreter', 'none');
 
 nexttile;
 hold on; grid on;
@@ -265,7 +254,7 @@ plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
 yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlabel('[S] (mM)');
 ylabel('v_0 (\muM/s)');
-title('Unconstrained GPML (NLML, boxed hyp)');
+title('Unconstrained GPML (minimize NLML)');
 legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
 xlim([x_lim_lo, x_max]);
