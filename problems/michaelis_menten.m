@@ -134,7 +134,7 @@ if debug_chol
     end
 end
 
-% Hyperparameter optimization (unconstrained NLML, unbounded)
+%% 1. Fit unconstrained GP
 fprintf('Optimizing hyperparameters (unconstrained NLML, GPML minimize)...\n');
 hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 
@@ -156,35 +156,17 @@ end
 f_upper_unc = m_unc + 2 * sqrt(max(s2_unc, 0));
 f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 
-% --- Pensoneault constrained GP (direct math-to-code translation of Eqs. 12-14) ---
-% Eq. (12):  argmin_theta  -log p(y | X, theta)
-% Eq. (13):  0 <= y*(x_c^(i)) - k * s(x_c^(i)),  i = 1, ..., m
-% Eq. (14):  0 <= epsilon  - |y^(j) - y*(x^(j))|, j = 1, ..., n
-% y*(.) and s(.) are the GP posterior predictive mean and standard deviation
-% (noisy predictive in GPML: ymu, sqrt(ys2)) at theta = (log_ell, log_sf, log_sn).
-
-% theta packs [log(ell); log(sf); log(sn)] (mean is fixed at zero via @meanZero).
-% Warm start: use the unconstrained NLML solution as both the template and
-% the starting point. theta0 is therefore already in a well-conditioned
-% region for chol() inside GPML's infGaussLik.
+%% 2. Build constraints
+% Pensoneault tails: mu* - k*s* >= 0, mu* + k*s* <= Vmax, mu*' - k*s*' >= 0 on X_c.
 hyp_tpl = hyp_unc;
-
-% Baseline scientific constraints (Pensoneault tail at eta = 2.2%, k ~ 2):
-%   mu*(S) - k*s*(S) >= 0,  mu*(S) + k*s*(S) <= Vmax,  mu*'(S) - k*s*'(S) >= 0
-% on X_c (and X_c_mono for derivatives). No data-fidelity tube in baseline.
 eta = 0.022;
 k   = -sqrt(2) * erfinv(2*eta - 1);   % Phi^{-1}(eta) ~ -2
-
-y_max = Vmax;   % L = 0 (lower tail), U = Vmax (upper tail)
-
-% Baseline: lower + upper + monotonicity on; data tube off (add later as separate experiment).
+y_max = Vmax;
 enforce_upper_bound = true;
 enforce_data_fidelity = false;
 enforce_monotonicity = true;
-k_mono = [];   % same k for value and derivative tails
-
-% Reserved for data-fidelity tube experiments (Eq. 14); unused when enforce_data_fidelity = false.
-epsilon = 0.165;
+k_mono = [];
+epsilon = 0.165;   % reserved for data-fidelity tube experiments
 
 if debug_chol && enforce_monotonicity
     try
@@ -196,22 +178,29 @@ if debug_chol && enforce_monotonicity
     end
 end
 
-% Warm start from unconstrained solution (projected onto hyperparameter box).
-theta0 = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
-if ~all(isfinite(theta0))
-    error('michaelis_menten:theta0', 'theta0 has non-finite entries; check hyp_unc.');
+objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+if debug_chol
+    objfun = @(theta) mm_gp_wrap_chol(objfun_inner, theta, hyp_tpl, x_col, 'objfun');
+else
+    objfun = objfun_inner;
 end
-
-[c0, ~] = pens_constraints(theta0, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+nonlcon_inner = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-fprintf('theta0 max constraint violation = %.6g\n', max(c0));
-fprintf('theta0: ell=%.4f sf=%.4f sn=%.4f\n', exp(theta0(1)), exp(theta0(2)), exp(theta0(3)));
+if debug_chol
+    nonlcon = @(theta) mm_nonlcon_wrap_chol(nonlcon_inner, theta, hyp_tpl, x_col, 'nonlcon');
+else
+    nonlcon = nonlcon_inner;
+end
+opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
+    'EnableFeasibilityMode', true, ...
+    'Display', 'iter', ...
+    'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 
-% Random search in hyp box: is any theta feasible (max(c) <= 0)?
+%% 3. Random search for feasible theta
 nTry = 5000;
 best_v = inf;
 best_theta = nan(3, 1);
+fprintf('Random search in hyp box (%d trials)...\n', nTry);
 for t = 1:nTry
     theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
     [c_try, ~] = pens_constraints(theta_try, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
@@ -226,36 +215,43 @@ end
 fprintf('Best random max(c) = %.6g\n', best_v);
 fprintf('Best random theta: ell=%.4f sf=%.4f sn=%.4f\n', exp(best_theta(1)), exp(best_theta(2)), exp(best_theta(3)));
 
-% Objective (Eq. 12): GPML's gp() with no test inputs returns the NLML.
-objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-if debug_chol
-    objfun = @(theta) mm_gp_wrap_chol(objfun_inner, theta, hyp_tpl, x_col, 'objfun');
-else
-    objfun = objfun_inner;
-end
-% Inequality constraints: optional upper tail (y_max), optional data tube (epsilon),
-% nonnegative + monotonicity at X_c; see enforce_* flags above.
-nonlcon_inner = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+%% 4. Choose fmincon start (feasible random if found, else projected unconstrained)
+theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
+[c_unc_box, ~] = pens_constraints(theta_unc_box, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-if debug_chol
-    nonlcon = @(theta) mm_nonlcon_wrap_chol(nonlcon_inner, theta, hyp_tpl, x_col, 'nonlcon');
+fprintf('Projected unconstrained start: max(c) = %.6g, ell=%.4f sf=%.4f sn=%.4f\n', ...
+    max(c_unc_box), exp(theta_unc_box(1)), exp(theta_unc_box(2)), exp(theta_unc_box(3)));
+
+if best_v <= 0
+    theta0 = best_theta;
+    fprintf('Using feasible random start for fmincon (max(c) = %.6g).\n', best_v);
 else
-    nonlcon = nonlcon_inner;
+    theta0 = theta_unc_box;
+    fprintf('No feasible random start found; using projected unconstrained start.\n');
+end
+if ~all(isfinite(theta0))
+    error('michaelis_menten:theta0', 'theta0 has non-finite entries.');
 end
 
-opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
-    'EnableFeasibilityMode', true, ...
-    'Display', 'iter', ...
-    'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
-
-fprintf(['Running constrained optimization (fmincon). |X_c|=%d |X_c_mono|=%d, k=%.4f; ', ...
+%% 5. Run constrained NLML optimization
+fprintf(['Running constrained fmincon. |X_c|=%d |X_c_mono|=%d, k=%.4f; ', ...
     'L=0 U=%g; upper=%d data_tube=%d mono=%d.\n'], ...
     numel(X_c), numel(X_c_mono), k, y_max, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
 fprintf(['  hyp box: ell [%.3g,%.3g], sf [%.3g,%.3g], sn [%.3g,%.3g].\n'], ...
     ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
 [theta_opt, nlml_opt, exitflag, output] = fmincon(objfun, theta0, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
-
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
+
+%% 6. Check final feasibility, box, and exitflag
+[c_final, ~] = pens_constraints(theta_opt, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+v_final = max(c_final);
+in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
+fprintf('Final max(c) = %.6g (feasible if <= 0)\n', v_final);
+fprintf('Final in hyp box: %d\n', in_box);
+fprintf('fmincon exitflag = %d (%s)\n', exitflag, output.message);
 [m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
 f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
