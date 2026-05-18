@@ -97,9 +97,9 @@ hyp.mean = [];              % @meanZero: no mean hyperparameters
 hyp.cov  = log([ell0; sf0]);
 hyp.lik  = log(sn0);
 
-% Hyperparameter box (constrained fmincon only; ell upper swept in sensitivity loop)
+% Hyperparameter box (constrained fmincon only)
 ell_bounds_lo = 0.02;
-ell_ub_sweep = [10, 15, 20, 30];
+ell_ub = 10;
 sf_bounds  = [0.1, 12];
 sn_bounds  = [0.05, 2.5];
 
@@ -113,50 +113,23 @@ inffunc = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-% --- Cholesky / PD diagnostics (set false to skip; see plan: debug Cholesky) ---
-debug_chol = true;
-% Optional Ky jitter in gp_seiso_deriv_pred is off for now (see commented line on Ky there).
-
-if debug_chol
-    ndup = numel(x_col) - numel(unique(x_col));
-    xs = sort(x_col(:));
-    if numel(xs) > 1
-        dxmin = min(diff(xs));
-    else
-        dxmin = NaN;
-    end
-    fprintf(['[CHOL debug inputs] n=%d duplicate_rows=%d min_positive_diff(x)=%.6g\n'], ...
-        numel(x_col), ndup, dxmin);
-    if ndup > 0
-        warning('michaelis_menten:duplicateX', ...
-            'Duplicate training x values make K_ff rank-deficient; tiny sigma_n breaks chol.');
-    end
-end
+% --- Cholesky / PD diagnostics (inactive; see mm_gp_wrap_chol below) ---
+% debug_chol = true;
+% if debug_chol
+%     ndup = numel(x_col) - numel(unique(x_col));
+%     ...
+% end
 
 %% 1. Fit unconstrained GP
 fprintf('Optimizing hyperparameters (unconstrained NLML, GPML minimize)...\n');
 hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-
-if debug_chol
-    fprintf('[CHOL debug hyp_unc] ell=%.6g sf=%.6g sn=%.6g (exp of log hyp)\n', ...
-        exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik(1)));
-    try
-        nlml_dbg = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-        fprintf('[CHOL debug hyp_unc] gp(NLML only) OK, NLML=%.6g\n', nlml_dbg);
-    catch ME
-        fprintf('[CHOL debug hyp_unc] gp(NLML) FAILED: %s\n', ME.message);
-        rethrow(ME);
-    end
-    mnKy = mm_min_eig_Ky_seiso(hyp_unc, x_col);
-    fprintf('[CHOL debug hyp_unc] min real eigenvalue of sym(Ky)=%.6g (<=0 => chol at risk)\n', mnKy);
-end
 
 [m_unc, s2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 f_upper_unc = m_unc + 2 * sqrt(max(s2_unc, 0));
 f_lower_unc = m_unc - 2 * sqrt(max(s2_unc, 0));
 
 %% 2. Build constraints
-% Pensoneault tails: mu* - k*s* >= 0, mu* + k*s* <= Vmax, mu*' - k*s*' >= 0 on X_c.
+% Pensoneault tails on latent f: fmu - k*sqrt(fs2) >= 0, fmu + k*sqrt(fs2) <= Vmax; f' tail on X_c.
 hyp_tpl = hyp_unc;
 eta = 0.022;
 k   = -sqrt(2) * erfinv(2*eta - 1);   % Phi^{-1}(eta) ~ -2
@@ -167,128 +140,182 @@ enforce_monotonicity = true;
 k_mono = [];
 epsilon = 0.165;   % reserved for data-fidelity tube experiments
 
-if debug_chol && enforce_monotonicity
-    try
-        gp_seiso_deriv_pred(hyp_unc, x_col, y_col, X_c_mono);
-        fprintf('[CHOL debug hyp_unc] gp_seiso_deriv_pred OK at unconstrained hyp.\n');
-    catch ME
-        fprintf('[CHOL debug hyp_unc] gp_seiso_deriv_pred FAILED: %s\n', ME.message);
-        rethrow(ME);
-    end
-end
-
-objfun_inner = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-obj_con = objfun_inner;   % NLML for ranking feasible random starts
-if debug_chol
-    objfun = @(theta) mm_gp_wrap_chol(objfun_inner, theta, hyp_tpl, x_col, 'objfun');
-else
-    objfun = objfun_inner;
-end
-nonlcon_inner = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+obj_con = objfun;
+nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-if debug_chol
-    nonlcon = @(theta) mm_nonlcon_wrap_chol(nonlcon_inner, theta, hyp_tpl, x_col, 'nonlcon');
-else
-    nonlcon = nonlcon_inner;
-end
 opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, ...
     'Display', 'off', ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 nTry = 5000;
 nMultistart = 10;
-active_tol = 1e-5;
 
 nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-cfg = struct('hyp_unc', hyp_unc, 'hyp_tpl', hyp_tpl, 'inffunc', inffunc, 'meanfunc', meanfunc, ...
-    'covfunc', covfunc, 'likfunc', likfunc, 'objfun', objfun, 'obj_con', obj_con, 'nonlcon', nonlcon, ...
-    'x_col', x_col, 'y_col', y_col, 'X_c', X_c, 'X_c_mono', X_c_mono, 'k', k, 'epsilon', epsilon, ...
-    'y_max', y_max, 'enforce_upper_bound', enforce_upper_bound, ...
-    'enforce_data_fidelity', enforce_data_fidelity, 'enforce_monotonicity', enforce_monotonicity, ...
-    'k_mono', k_mono, 'sf_bounds', sf_bounds, 'sn_bounds', sn_bounds, 'nTry', nTry, ...
-    'nMultistart', nMultistart, 'opts', opts, 'active_tol', active_tol, ...
-    'nlml_unc', nlml_unc, 'x_grid', x_grid, 'y_true', y_true, 'Vmax', Vmax);
 
-%% 3–6. Length-scale upper-bound sensitivity (constrained pipeline per ell_ub)
-fprintf('\n=== Length-scale upper-bound sensitivity ===\n');
-fprintf('Random design: rng(42) per ell_ub case (common unit-cube draws, mapped through each box).\n');
-sens = [];
-theta_prev = [];
-for i = 1:numel(ell_ub_sweep)
-    fprintf('\n--- ell upper = %g (%d/%d) ---\n', ell_ub_sweep(i), i, numel(ell_ub_sweep));
-    out_i = mm_constrained_ell_ub_run(ell_ub_sweep(i), ell_bounds_lo, cfg, theta_prev);
-    if isempty(sens)
-        sens = out_i;
-    else
-        sens(i) = out_i;
+%% 3. Constrained fit (ell in [ell_bounds_lo, ell_ub]; latent bounds; multi-start fmincon)
+ell_bounds = [ell_bounds_lo, ell_ub];
+hyp_lb = log([ell_bounds(1); sf_bounds(1); sn_bounds(1)]);
+hyp_ub = log([ell_bounds(2); sf_bounds(2); sn_bounds(2)]);
+
+fprintf('\n=== Constrained GP (ell_ub=%g) ===\n', ell_ub);
+fprintf('Random search (%d trials), ell in [%.3g, %.3g]; rank feasible by NLML; top %d starts for fmincon.\n', ...
+    nTry, ell_bounds(1), ell_bounds(2), nMultistart);
+
+feasible_starts = zeros(3, 0);
+best_feas_nlml = inf;
+best_feas_theta = nan(3, 1);
+rng(42);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = pens_constraints(theta_try, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+        x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
+        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+    if max(c_try) <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = obj_con(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+        end
     end
-    theta_prev = sens(i).theta_opt;
 end
-mm_print_ell_ub_sensitivity_table(sens, ell_ub_sweep);
+nFeas = size(feasible_starts, 2);
+fprintf('Feasible random starts: %d / %d\n', nFeas, nTry);
+if nFeas > 0
+    fprintf('Best feasible pre-fmincon (lowest NLML): NLML=%.4f ell=%.4f sf=%.4f sn=%.4f\n', ...
+        best_feas_nlml, exp(best_feas_theta(1)), exp(best_feas_theta(2)), exp(best_feas_theta(3)));
+end
 
-% Use ell_ub = 4 case for plots and detailed binding diagnostics
-idx_plot = 1;
-theta_opt = sens(idx_plot).theta_opt;
-nlml_opt = sens(idx_plot).nlml_opt;
-exitflag = sens(idx_plot).exitflag;
+theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
+if nFeas > 0
+    nlml_feas = nan(nFeas, 1);
+    for j = 1:nFeas
+        nlml_feas(j) = obj_con(feasible_starts(:, j));
+    end
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+else
+    fprintf('No feasible random start; using projected unconstrained theta.\n');
+    starts_for_fmincon = theta_unc_box;
+end
+
+best_nlml = inf;
+theta_opt = nan(3, 1);
+nlml_opt = nan;
+exitflag = -99;
+win_start = 0;
+win_nlml_pre = nan;
+fmincon_output = struct('message', 'no fmincon run');
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    nlml_pre = obj_con(theta0_j);
+    fprintf('fmincon start %d/%d: ell=%.4f sf=%.4f sn=%.4f NLML_pre=%.4f\n', j, nStarts, ...
+        exp(theta0_j(1)), exp(theta0_j(2)), exp(theta0_j(3)), nlml_pre);
+    [theta_j, nlml_j, ef_j, out_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
+    fprintf('  -> NLML=%.4f exitflag=%d\n', nlml_j, ef_j);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml_opt = nlml_j;
+        exitflag = ef_j;
+        win_start = j;
+        win_nlml_pre = nlml_pre;
+        fmincon_output = out_j;
+    end
+end
+
+if ~isfinite(best_nlml)
+    if nFeas > 0
+        theta_opt = best_feas_theta;
+    else
+        theta_opt = theta_unc_box;
+    end
+    nlml_opt = obj_con(theta_opt);
+    exitflag = -99;
+    fmincon_output = struct('message', 'no successful fmincon run; using fallback theta');
+    fprintf('Warning: no successful fmincon run; using fallback theta.\n');
+else
+    if isstruct(fmincon_output) && isfield(fmincon_output, 'message')
+        fmincon_msg = char(fmincon_output.message);
+    else
+        fmincon_msg = '';
+    end
+    fprintf('Winning start: %d/%d (NLML_pre=%.4f) -> NLML=%.4f exitflag=%d\n', ...
+        win_start, nStarts, win_nlml_pre, nlml_opt, exitflag);
+    fprintf('fmincon: %s\n', fmincon_msg);
+end
+
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
 [c_final, ~] = pens_constraints(theta_opt, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-v_final = sens(idx_plot).max_c_final;
-hyp_lb = sens(idx_plot).hyp_lb;
-hyp_ub = sens(idx_plot).hyp_ub;
-ell_bounds = sens(idx_plot).ell_bounds;
-in_box = sens(idx_plot).in_box;
+v_final = max(c_final);
+in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
+fprintf('Final max(c) = %.6g (feasible if <= 0) | in hyp box: %d\n', v_final, in_box);
 
-fprintf('\n=== Baseline plot case (ell upper = %g) ===\n', ell_ub_sweep(idx_plot));
-fprintf('Final max(c) = %.6g (feasible if <= 0)\n', v_final);
-fprintf('Final in hyp box: %d\n', in_box);
-fprintf('fmincon exitflag = %d (%s)\n', exitflag, sens(idx_plot).fmincon_message);
-mm_report_binding_diagnostics(theta_opt, c_final, hyp_lb, hyp_ub, numel(X_c), numel(X_c_mono), ...
-    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, numel(x_col));
+%% 4. Plot unconstrained vs constrained
+[m_con, s2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
+f_upper_con = m_con + 2 * sqrt(max(s2_con, 0));
+f_lower_con = m_con - 2 * sqrt(max(s2_con, 0));
 
 x_lim_lo = 0;
-ylim_unc = mm_plot_ell_ub_sensitivity_grid(sens, ell_ub_sweep, x_grid, y_true, x_train, y_train, ...
-    m_unc, s2_unc, f_upper_unc, f_lower_unc, x_lim_lo, x_max, Vmax, n_train, noise_sd_true);
+tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=%g, latent bounds)', ell_ub), ...
+    'Interpreter', 'none');
 
-fprintf('GP optimization complete.\n');
+nexttile;
+hold on; grid on;
+fill([x_grid, fliplr(x_grid)], [f_upper_unc', fliplr(f_lower_unc')], [0.75, 0.75, 0.78], ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
+plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+    'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
+yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
+xlabel('[S] (mM)');
+ylabel('v_0 (\muM/s)');
+title('Unconstrained GPML (minimize NLML)');
+legend('Location', 'southeast');
+set(gca, 'FontSize', 11);
+xlim([x_lim_lo, x_max]);
+ylim_unc = ylim;
+
+nexttile;
+hold on; grid on;
+fill([x_grid, fliplr(x_grid)], [f_upper_con', fliplr(f_lower_con')], [0.55, 0.72, 0.55], ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', '95% CI');
+plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'GP mean');
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+    'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
+yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
+xlabel('[S] (mM)');
+ylabel('v_0 (\muM/s)');
+title(sprintf('Constrained (ell=%.2f NLML=%.2f exit=%d)', exp(theta_opt(1)), nlml_opt, exitflag), ...
+    'Interpreter', 'none');
+legend('Location', 'southeast');
+set(gca, 'FontSize', 11);
+ylim(ylim_unc);
+xlim([x_lim_lo, x_max]);
+
+fprintf('\nGP optimization complete.\n');
 fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | fmincon exitflag=%d\n', ...
-    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), ...
-    nlml_opt, exitflag);
+    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_opt, exitflag);
 
-%% Encodings to try:
-% Zero-mean prior: MM curves are positive; sparse data can pull the posterior toward
-% zero between points. @meanConst is an alternative if that behavior is unwanted.
+% --- Inactive: ell_ub sensitivity sweep, binding diagnostics, numeric verify, save ---
+% fprintf('\n=== Length-scale upper-bound sensitivity ===\n');
+% ...
+% mm_plot_ell_ub_sensitivity_grid(...)
+% mm_verify_constraints_at_opt(...)
+% save(..., 'mm_last_run.mat');
 
-% Hyperparameter initialization techniques:  $std(x)$ for the lengthscale 
-% ($\ell$) and $std(y)$ for the signal variance ($\sigma_f$) is a classic, 
-% robust heuristic for stationary data. Just remember that GPML's minimize 
-% function can sometimes get stuck in local minima if the initial noise 
-% guess ($sn_0$) is too far from the actual 5% relative noise you've 
-% injected. 
-% Log-Space Optimization: Remember that GPML optimizes in 
-% log-space. If your initial noise guess ($sn_0$) is too high, the 
-% optimizer might converge to a "noise-only" solution where the GP treats 
-% the entire biological signal as random fluctuation
-
-% Kernel Choice: You are using covSEiso (Squared Exponential). This assumes 
-% the function is infinitely smooth. While fine for the saturation curve, 
-% if you eventually switch to time-series data with sharp transitions (like 
-% the action potential mentioned in your research framing), this kernel 
-% might "over-smooth" the peak.
-
-%% Boundedness
-% Transform bounded observations into an unbounded latent space, fit a
-% standard GP, and then warp the predictions back.
-
-% In literature used probit function for transformation
-%Consider also Lineweaver-Burk space
-
-% Note that warping the output distorts the uncertainty bands. Uncertainty
-% will become asymmetric.
+% --- Inactive notes (encodings / warping experiments) ---
+% %% Encodings to try: @meanConst, log-space init, kernel choice, ...
+% %% Boundedness: probit / Lineweaver-Burk warping, ...
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
 % Pack theta = [log(ell); log(sf); log(sn)] into a GPML hyp struct (@meanZero).
@@ -349,9 +376,8 @@ end
 
 function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, X_c_mono, k, epsilon, y_max, ...
     enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono)
-% Pensoneault-style inequalities c(theta) <= 0: nonnegative tail at X_c (Eq. 13 lower);
-% optional upper tail y*(x_c)+k*s<=y_max; optional data tube |y-y*|<=epsilon (Eq. 14);
-% optional monotonicity on f' at X_c_mono (or X_c if X_c_mono is empty). fmincon expects c <= 0.
+% Pensoneault-style inequalities c(theta) <= 0: lower/upper tails on latent f (fmu, fs2) at X_c;
+% optional data tube |y - ymu(x)| <= epsilon (noisy predictive mean); monotonicity on f' unchanged.
 
 hyp = theta_to_hyp(theta, hyp_tpl);
 
@@ -366,19 +392,19 @@ if enforce_data_fidelity
 else
     xstar = X_c(:);
 end
-[ymu, ys2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
+[ymu, ys2, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
 
 nC   = numel(X_c);
-y_star_xc = ymu(1:nC);                       % y*(x_c^(i))
-s_xc      = sqrt(max(ys2(1:nC), 0));         % s(x_c^(i))
+m_xc = fmu(1:nC);                            % E[f(x_c) | data]
+s_xc = sqrt(max(fs2(1:nC), 0));              % sqrt(Var(f(x_c) | data))
 
-% Eq. (13) lower: 0 <= y*(x_c) - k * s(x_c)   =>   c_nonneg = k * s(x_c) - y*(x_c) <= 0
-c_nonneg = k * s_xc - y_star_xc;
+% Eq. (13) lower on latent f: m - k*s >= 0  =>  c_nonneg = k*s - m <= 0
+c_nonneg = k * s_xc - m_xc;
 
 c = c_nonneg(:);
 if enforce_upper_bound
-    % Upper-tail: y*(x_c) + k * s(x_c) <= y_max  =>  c_upper <= 0
-    c_upper = y_star_xc + k * s_xc - y_max;
+    % Upper-tail on latent f: m + k*s <= y_max  =>  c_upper <= 0
+    c_upper = m_xc + k * s_xc - y_max;
     c = [c; c_upper(:)];
 end
 if enforce_data_fidelity
@@ -402,6 +428,9 @@ if enforce_monotonicity
 end
 ceq = [];
 end
+
+%{
+% --- Sensitivity / debug helpers (inactive) ---
 
 function mn = mm_min_eig_Ky_seiso(hyp, x)
 % Smallest eigenvalue of sym(Ky) with same Ky as gp_seiso_deriv_pred (no extra jitter).
@@ -770,3 +799,55 @@ text(0.1, 0.70, sprintf('Data: n=%d, \\sigma=%.2g', n_train, noise_sd_true), 'Un
 text(0.1, 0.55, 'Blue: MM truth; dashed: GP mean', 'Units', 'normalized', 'FontSize', 10);
 text(0.1, 0.40, 'Continuation warm start between ell_{ub} cases', 'Units', 'normalized', 'FontSize', 10);
 end
+
+function mm_verify_constraints_at_opt(theta_opt, ell_ub_label, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, k, k_mono, y_max, Vmax, Km)
+% Compare coded constraints (ymu/ys2, c_mono) vs latent f/f' forms at theta_opt.
+hyp = theta_to_hyp(theta_opt, hyp_tpl);
+if isempty(k_mono)
+    k_mono = k;
+end
+Xg = X_c(:);
+nC = numel(Xg);
+
+[ymu, ys2, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, Xg);
+ymu = ymu(:);
+fmu = fmu(:);
+sy = sqrt(max(ys2(:), 0));
+sf = sqrt(max(fs2(:), 0));
+sn = exp(hyp.lik(1));
+
+fprintf('\n--- Optimum (ell_ub=%g): ell=%.4f sf=%.4f sn=%.4f ---\n', ell_ub_label, ...
+    exp(theta_opt(1)), exp(theta_opt(2)), exp(theta_opt(3)));
+
+fprintf('[Bounds] max|ymu-fmu| at X_c = %.3e (GPML: means coincide for likGauss)\n', max(abs(ymu - fmu)));
+fprintf('[Bounds] sy - sf: min=%.4g med=%.4g max=%.4g | sigma_n=%.4g\n', ...
+    min(sy - sf), median(sy - sf), max(sy - sf), sn);
+fprintf('[Bounds] coded (fmu/fs2) nonneg max(c)=%.6g | y* form max(k*sy-ymu)=%.6g\n', ...
+    max(k * sf - fmu), max(k * sy - ymu));
+fprintf('[Bounds] coded (fmu/fs2) upper max(c)=%.6g | y* form max(ymu+k*sy-y_max)=%.6g\n', ...
+    max(fmu + k * sf - y_max), max(ymu + k * sy - y_max));
+
+[m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x_col, y_col, Xg);
+s_deriv = sqrt(max(s2_deriv(:), 0));
+c_mono_inc = k_mono .* s_deriv - m_deriv(:);       % coded: increasing f' >= 0 tail
+c_mono_dec = m_deriv(:) + k_mono .* s_deriv;       % wrong sign: decreasing f' <= 0 tail
+
+mm_d = Vmax * Km ./ (Km + Xg).^2;
+fprintf('[Mono] MM truth dV/d[S]: min=%.4g max=%.4g (>=0 for increasing MM)\n', min(mm_d), max(mm_d));
+fprintf('[Mono] posterior m_deriv: min=%.4g max=%.4g | #m_deriv<0: %d/%d\n', ...
+    min(m_deriv), max(m_deriv), sum(m_deriv < 0), nC);
+fprintf('[Mono] coded c_mono=max(k*s-m_deriv)=%.6g (feasible if<=0) | #active m_deriv<=k*s: %d\n', ...
+    max(c_mono_inc), sum(m_deriv <= k_mono .* s_deriv + 1e-8));
+fprintf('[Mono] WRONG decreasing tail max(m_deriv+k*s)=%.6g (>>0 => not enforcing f''<=0)\n', max(c_mono_dec));
+fprintf('[Mono] corr(m_deriv, MM truth deriv) = %.4f\n', corr(m_deriv(:), mm_d));
+
+% Latent f values vs coded tails at a few grid points
+idx_show = unique(round(linspace(1, nC, min(5, nC))));
+fprintf('[Sample] S     ymu    fmu    sy      sf     m_deriv  MM_dv/dS\n');
+for j = idx_show
+    fprintf('  %5.2f %6.3f %6.3f %6.4f %6.4f %8.4f %8.4f\n', ...
+        Xg(j), ymu(j), fmu(j), sy(j), sf(j), m_deriv(j), mm_d(j));
+end
+end
+%}
