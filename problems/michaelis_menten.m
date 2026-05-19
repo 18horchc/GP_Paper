@@ -12,20 +12,27 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 
 %% 2. Training data ([S] in mM, v_0 in μM/s)
-% Baseline: n_train uniform [S] on [0, x_max]; additive noise N(0, (noise_frac*Vmax)^2) on every point.
-n_train = 10;
+% Baseline: n_train uniform [S] on [0, x_max].
+% Homoscedastic additive noise: eps_i ~ N(0, (noise_frac * y_domain_max)^2),
+% y_domain_max = max_{S in [0,x_max]} |v(S)| (same sigma at every x_i).
+n_train = 30;
 x_max = 2;              % upper [S] (mM): sampling, ground truth, and plot extent
-noise_frac = 0.05;      % sigma = noise_frac * Vmax
+noise_frac = 0.01;
 
-% Baseline constraint grid: X_c = {0, 0.02, ..., x_max} (~101 points).
-constraint_step = 0.02;
+% Baseline constraint grid: X_c = {0, 0.05, 0.10, ..., x_max} (41 points).
+constraint_step = 0.05;
 X_c = (0:constraint_step:x_max)';
-X_c_mono = X_c;
+%x_mono_max = 1;
+%X_c_mono = (0:constraint_step:x_mono_max)';  % 21 points: 0, 0.05, ..., 1.00
+X_c_mono = X_c; 
 
-rng(42);
+rng(100);
 x_train = linspace(0, x_max, n_train);
 v_true = mm_static(x_train);
-noise_sd_true = noise_frac * Vmax;
+y_domain_max = mm_static(x_max);   % max on [0, x_max] for increasing MM
+noise_sd_true = noise_frac * y_domain_max;
+gp_noise_level = noise_sd_true;   % simulation / nominal observation noise SD
+epsilon = 0.6; %2 * gp_noise_level;     % data-fidelity tube half-width
 y_train = v_true + noise_sd_true * randn(size(v_true));
 
 %% 3. Ground truth curve on an [S] grid (mM)
@@ -99,9 +106,9 @@ hyp.lik  = log(sn0);
 
 % Hyperparameter box (constrained fmincon only)
 ell_bounds_lo = 0.02;
-ell_ub = 4;
-sf_bounds  = [0.1, 12];
-sn_bounds  = [0.05, 2.5];
+ell_ub = 3;
+sf_bounds  = [0.05, 15];
+sn_bounds  = [1e-4, 2];
 
 % Define GP components
 meanfunc = @meanZero;
@@ -128,18 +135,18 @@ hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y
 % Pensoneault tails on latent f: fmu - k*sqrt(fs2) >= 0, fmu + k*sqrt(fs2) <= Vmax; f' tail on X_c.
 hyp_tpl = hyp_unc;
 eta = 0.022;
-k   = -sqrt(2) * erfinv(2*eta - 1);   % Phi^{-1}(eta) ~ -2
+k   = -sqrt(2) * erfinv(2*eta - 1);   % Enforces m - k*s >= 0, equivalent to m + Phi^{-1}(eta)*s >= 0 (k = -Phi^{-1}(eta), so for eta = 0.022, k ≈ 2.014)
 y_max = Vmax;
 enforce_upper_bound = true;
-enforce_data_fidelity = false;
+enforce_data_fidelity = true;
 enforce_monotonicity = true;
 k_mono = [];
-epsilon = 0.165;   % reserved for data-fidelity tube experiments
+delta_mono = 0; %0.6 * gp_noise_level;   % slack on f' floor: m' - k_mono*s' >= -delta_mono
 
 objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 obj_con = objfun;
 nonlcon = @(theta) pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
-    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono, delta_mono);
 opts = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, ...
     'Display', 'off', ...
@@ -154,6 +161,24 @@ ell_bounds = [ell_bounds_lo, ell_ub];
 hyp_lb = log([ell_bounds(1); sf_bounds(1); sn_bounds(1)]);
 hyp_ub = log([ell_bounds(2); sf_bounds(2); sn_bounds(2)]);
 
+nC = numel(X_c);
+nMono = numel(X_c_mono);
+nData = numel(x_col);
+nConstr = nC;
+if enforce_upper_bound, nConstr = nConstr + nC; end
+if enforce_data_fidelity, nConstr = nConstr + nData; end
+if enforce_monotonicity, nConstr = nConstr + nMono; end
+
+theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
+
+fprintf('\n=== Feasibility study (all constraints + hyp box) ===\n');
+fprintf('Data fidelity: ON | epsilon = %.4g (= 2 * gp_noise_level = 2 * %.4g)\n', epsilon, gp_noise_level);
+fprintf('Tail level eta = %.3g%% | k = %.4f | y_max = %.4g | delta_mono = %.4g\n', 100 * eta, k, y_max, delta_mono);
+fprintf('Hyp box: ell in [%.4g, %.4g], sf in [%.4g, %.4g], sn in [%.4g, %.4g]\n', ...
+    ell_bounds(1), ell_bounds(2), sf_bounds(1), sf_bounds(2), sn_bounds(1), sn_bounds(2));
+fprintf('Constraint counts: %d lower + %d upper + %d data + %d mono = %d total\n', ...
+    nC, nC, nData, nMono, nConstr);
+
 fprintf('\n=== Constrained GP (ell_ub=%g) ===\n', ell_ub);
 fprintf('Random search (%d trials), ell in [%.3g, %.3g]; rank feasible by NLML; top %d starts for fmincon.\n', ...
     nTry, ell_bounds(1), ell_bounds(2), nMultistart);
@@ -161,13 +186,23 @@ fprintf('Random search (%d trials), ell in [%.3g, %.3g]; rank feasible by NLML; 
 feasible_starts = zeros(3, 0);
 best_feas_nlml = inf;
 best_feas_theta = nan(3, 1);
+best_near_feas_theta = nan(3, 1);
+best_near_feas_max_c = inf;
+best_near_feas_cmx = struct('lower', NaN, 'upper', NaN, 'data', NaN, 'mono', NaN);
 rng(42);
 for t = 1:nTry
     theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
     [c_try, ~] = pens_constraints(theta_try, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
         x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
-        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
-    if max(c_try) <= 0
+        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono, delta_mono);
+    v_try = max(c_try);
+    if v_try < best_near_feas_max_c
+        best_near_feas_max_c = v_try;
+        best_near_feas_theta = theta_try;
+        best_near_feas_cmx = mm_c_family_maxes(c_try, nC, nMono, nData, ...
+            enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+    end
+    if v_try <= 0
         feasible_starts = [feasible_starts, theta_try];
         nlml_try = obj_con(theta_try);
         if nlml_try < best_feas_nlml
@@ -183,7 +218,31 @@ if nFeas > 0
         best_feas_nlml, exp(best_feas_theta(1)), exp(best_feas_theta(2)), exp(best_feas_theta(3)));
 end
 
-theta_unc_box = min(max([hyp_unc.cov(1); hyp_unc.cov(2); hyp_unc.lik(1)], hyp_lb), hyp_ub);
+fprintf('\n=== Feasibility summary (random search) ===\n');
+if nFeas > 0
+    fprintf('FEASIBLE: at least one theta in box satisfies all constraints (nFeas = %d / %d).\n', nFeas, nTry);
+else
+    fprintf('INFEASIBLE: no theta among %d random draws satisfied all constraints.\n', nTry);
+    fprintf('Best near-feasible: max(c) = %.6g (lower=%.6g upper=%.6g data=%.6g mono=%.6g)\n', ...
+        best_near_feas_max_c, best_near_feas_cmx.lower, best_near_feas_cmx.upper, ...
+        best_near_feas_cmx.data, best_near_feas_cmx.mono);
+    fprintf('  at ell=%.4f sf=%.4f sn=%.4f\n', exp(best_near_feas_theta(1)), ...
+        exp(best_near_feas_theta(2)), exp(best_near_feas_theta(3)));
+end
+if nFeas == 0
+    fprintf('Warning: no feasible theta found in random search; fmincon may fail or return infeasible point.\n');
+end
+
+fprintf('\n=== Spot checks (special theta candidates) ===\n');
+mm_print_feas_candidate('unc_box', theta_unc_box, nonlcon, nC, nMono, nData, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+for b = 0:7
+    lo_mask = [bitget(b, 1); bitget(b, 2); bitget(b, 3)];
+    theta_corner = hyp_lb + lo_mask .* (hyp_ub - hyp_lb);
+    mm_print_feas_candidate(sprintf('corner_%d', b), theta_corner, nonlcon, nC, nMono, nData, ...
+        enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+end
+
 if nFeas > 0
     nlml_feas = nan(nFeas, 1);
     for j = 1:nFeas
@@ -246,10 +305,14 @@ end
 hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
 [c_final, ~] = pens_constraints(theta_opt, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x_col, y_col, X_c, X_c_mono, k, epsilon, y_max, ...
-    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono);
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono, delta_mono);
 v_final = max(c_final);
 in_box = all(theta_opt >= hyp_lb - 1e-9 & theta_opt <= hyp_ub + 1e-9);
 fprintf('Final max(c) = %.6g (feasible if <= 0) | in hyp box: %d\n', v_final, in_box);
+cmx_final = mm_c_family_maxes(c_final, nC, nMono, nData, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+fprintf('Final constraint families: lower=%.6g upper=%.6g data=%.6g mono=%.6g\n', ...
+    cmx_final.lower, cmx_final.upper, cmx_final.data, cmx_final.mono);
 
 [~, ys2_Xc, fmu_Xc, fs2_Xc] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, X_c);
 sf_Xc = sqrt(max(fs2_Xc(:), 0));
@@ -258,31 +321,32 @@ fprintf('Upper tail on X_c at constrained optimum (eta=%.3g, k=%.4f):\n', eta, k
 fprintf('  latent max(fmu + k*sf - Vmax) = %.6g (<=0 if constraint satisfied)\n', max(fmu_Xc + k * sf_Xc - y_max));
 fprintf('  obs    max(fmu + k*sy - Vmax) = %.6g (may exceed 0; not constrained)\n', max(fmu_Xc + k * sy_Xc - y_max));
 
-%% 4. Plot unconstrained vs constrained (latent f credible bands: fmu +/- k*sqrt(fs2))
+%% 4. Plot unconstrained vs constrained (latent f: fmu +/- k_plot*sqrt(fs2), k_plot=2)
+k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
-sd_unc = sqrt(max(fs2_unc(:), 0));
-f_upper_unc = m_unc + k * sd_unc;
-f_lower_unc = m_unc - k * sd_unc;
+sf_unc = sqrt(max(fs2_unc(:), 0));
+f_upper_unc = m_unc + k_plot * sf_unc;
+f_lower_unc = m_unc - k_plot * sf_unc;
 
 [~, ~, fmu_con, fs2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_con = fmu_con(:);
-sd_con = sqrt(max(fs2_con(:), 0));
-f_upper_con = m_con + k * sd_con;
-f_lower_con = m_con - k * sd_con;
-fprintf('Plot band on x_grid: max latent upper = %.4f (Vmax=%g)\n', max(f_upper_con), Vmax);
+sf_con = sqrt(max(fs2_con(:), 0));
+f_upper_con = m_con + k_plot * sf_con;
+f_lower_con = m_con - k_plot * sf_con;
+fprintf('Plot band on x_grid: max latent upper (k=%g) = %.4f (Vmax=%g)\n', k_plot, max(f_upper_con), Vmax);
 
 x_lim_lo = 0;
-band_label = sprintf('~%.0f%% credible interval (latent f)', 100 * (1 - eta));
+band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
 tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=%g, latent bounds)', ell_ub), ...
+title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=%g)', ell_ub), ...
     'Interpreter', 'none');
 
 nexttile;
 hold on; grid on;
 fill([x_grid, fliplr(x_grid)], [f_upper_unc', fliplr(f_lower_unc')], [0.75, 0.75, 0.78], ...
     'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', band_label);
-plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean (latent f)');
+plot(x_grid, m_unc, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean \mu_f');
 plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
 plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
@@ -299,7 +363,7 @@ nexttile;
 hold on; grid on;
 fill([x_grid, fliplr(x_grid)], [f_upper_con', fliplr(f_lower_con')], [0.55, 0.72, 0.55], ...
     'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', band_label);
-plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean (latent f)');
+plot(x_grid, m_con, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean \mu_f');
 plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
 plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', sprintf('Data (n=%d, \\sigma=%.2g)', n_train, noise_sd_true));
@@ -336,6 +400,38 @@ hyp = hyp_tpl;
 hyp.cov  = theta(1:2);
 hyp.lik  = theta(3);
 hyp.mean = [];
+end
+
+function cmx = mm_c_family_maxes(c_final, nC, nMono, nData, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity)
+idx = 0;
+cmx.lower = max(c_final(idx + (1:nC)));
+idx = idx + nC;
+if enforce_upper_bound
+    cmx.upper = max(c_final(idx + (1:nC)));
+    idx = idx + nC;
+else
+    cmx.upper = NaN;
+end
+if enforce_data_fidelity
+    cmx.data = max(c_final(idx + (1:nData)));
+    idx = idx + nData;
+else
+    cmx.data = NaN;
+end
+if enforce_monotonicity
+    cmx.mono = max(c_final(idx + (1:nMono)));
+else
+    cmx.mono = NaN;
+end
+end
+
+function mm_print_feas_candidate(label, theta, nonlcon, nC, nMono, nData, ...
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity)
+[c, ~] = nonlcon(theta(:));
+cmx = mm_c_family_maxes(c, nC, nMono, nData, enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity);
+fprintf('  %-10s max(c)=%.6g (lo=%.6g up=%.6g data=%.6g mono=%.6g) ell=%.4f sf=%.4f sn=%.4f\n', ...
+    label, max(c), cmx.lower, cmx.upper, cmx.data, cmx.mono, ...
+    exp(theta(1)), exp(theta(2)), exp(theta(3)));
 end
 
 function [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, X_c)
@@ -388,9 +484,10 @@ s2_deriv = max(k_dd_diag - q, 0);
 end
 
 function [c, ceq] = pens_constraints(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, x, y, X_c, X_c_mono, k, epsilon, y_max, ...
-    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono)
+    enforce_upper_bound, enforce_data_fidelity, enforce_monotonicity, k_mono, delta_mono)
 % Pensoneault-style inequalities c(theta) <= 0: lower/upper tails on latent f (fmu, fs2) at X_c;
-% optional data tube |y - ymu(x)| <= epsilon (noisy predictive mean); monotonicity on f' unchanged.
+% optional data tube |y - ymu(x)| <= epsilon (noisy predictive mean);
+% monotonicity: m_deriv - k_mono * s_deriv >= -delta_mono (delta_mono=0 => strict tail floor).
 
 hyp = theta_to_hyp(theta, hyp_tpl);
 
@@ -398,6 +495,7 @@ if nargin < 14 || isempty(enforce_upper_bound), enforce_upper_bound = true; end
 if nargin < 15 || isempty(enforce_data_fidelity), enforce_data_fidelity = true; end
 if nargin < 16 || isempty(enforce_monotonicity), enforce_monotonicity = true; end
 if nargin < 17 || isempty(k_mono), k_mono = k; end
+if nargin < 18 || isempty(delta_mono), delta_mono = 0; end
 
 % GPML predictive: need training x in xstar only when the data-fidelity block is on.
 if enforce_data_fidelity
@@ -432,11 +530,11 @@ if enforce_monotonicity
     else
         Xg = X_c_mono(:);
     end
-    % Monotonicity (increasing): posterior on f'(x) is Gaussian; same tail form as
-    % Eq. (13) with optional k_mono (defaults to k): m_deriv - k_mono * s_deriv >= 0.
+    % Monotonicity (increasing): m_deriv - k_mono * s_deriv >= -delta_mono
+    % => c_mono = k_mono * s_deriv - m_deriv - delta_mono <= 0
     [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, Xg);
     s_deriv = sqrt(max(s2_deriv, 0));
-    c_mono = k_mono .* s_deriv - m_deriv;
+    c_mono = k_mono .* s_deriv - m_deriv - delta_mono;
     c = [c; c_mono];
 end
 ceq = [];
