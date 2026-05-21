@@ -5,8 +5,8 @@ clear; clc; close all;
 % Parameters for a standard inhibitory drug response
 E_min = 5.0;       % Minimum effect (baseline) 
 E_max = 10.0;       % Maximum effect 
-EC50  = 7.5;       % Half-maximal effective concentration
-n     = 1.5;       % Hifll coefficient (slope/cooperativity)
+EC50  = 12.5;       % Half-maximal effective concentration
+n     = 3.0;       % Hifll coefficient (slope/cooperativity)
 
 x_max = 35;
 
