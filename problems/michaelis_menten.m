@@ -19,8 +19,8 @@ y_train = v_true + noise_sd_true * randn(size(v_true));
 n_train = numel(x_train);
 
 %% Derivative observations (Solak et al. 2002): df/dx at selected [S]
-x_deriv = [1; 1.5; 2];
-y_deriv = 0.3 * ones(3, 1);
+x_deriv = [0.05; 1; 1.25; 1.5; 1.75; 2];
+y_deriv = [20; 0.3; 0.3; 0.3; 0.3; 0.3];
 sn_deriv = 0.02;   % derivative observation noise (distinct from function noise sigma_n)
 
 %% Ground truth curve
