@@ -12,10 +12,11 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 
 %% 2. Training data ([S] in mM, v_0 in μM/s)
-% Baseline: n_train uniform [S] on [0, x_max].
 % Homoscedastic additive noise: eps_i ~ N(0, (noise_frac * y_domain_max)^2),
 % y_domain_max = max_{S in [0,x_max]} |v(S)| (same sigma at every x_i).
-n_train = 30;
+n_train = 12;
+sample_design = 'CustomFixed';   % fixed manual locations; plot not saved
+sample_grid_step = 0.1;            % B_SampleLocations designs (0.1 grid)
 x_max = 2;              % upper [S] (mM): sampling, ground truth, and plot extent
 noise_frac = 0.01;
 
@@ -26,8 +27,118 @@ X_c = (0:constraint_step:x_max)';
 %X_c_mono = (0:constraint_step:x_mono_max)';  % 21 points: 0, 0.05, ..., 1.00
 X_c_mono = X_c; 
 
+x_pool = (0:sample_grid_step:x_max)';
+is_cutoff_design = strncmp(sample_design, 'cutoff_', 7);
+is_repeated_meas_design = ~isempty(regexp(sample_design, '^\d+x\d+(_random\d*)?$', 'once'));
+is_custom_fixed_design = strcmp(sample_design, 'CustomFixed');
+if ~is_cutoff_design && ~is_repeated_meas_design && ~is_custom_fixed_design
+    assert(n_train <= numel(x_pool), 'n_train exceeds sample grid size.');
+end
 rng(100);
-x_train = linspace(0, x_max, n_train);
+% C_Cutoffs master set: n_train evenly spaced points on [0, x_max].
+if is_cutoff_design
+    x_master_cutoff = linspace(0, x_max, n_train)';
+end
+% D_RepeatedMeas: N locations, R replicates per location (NxR or NxR_random[#] design).
+if is_repeated_meas_design
+    tok = regexp(sample_design, '^(\d+)x(\d+)(_random\d*)?$', 'tokens', 'once');
+    n_locations = str2double(tok{1});
+    n_replicate = str2double(tok{2});
+    if isempty(tok{3})
+        x_locations_repeated = linspace(0, x_max, n_locations)';
+    else
+        x_pool_repeated = (0:constraint_step:x_max)';
+        assert(n_locations <= numel(x_pool_repeated), ...
+            'RepeatedMeas random: n_locations exceeds 0.05 grid size.');
+        if strcmp(tok{3}, '_random')
+            random_rng_seed = 100;
+        else
+            random_draw = str2double(regexp(tok{3}, '\d+$', 'match', 'once'));
+            random_rng_seed = 100 + random_draw - 1;   % _random2 -> seed 101
+        end
+        rng(random_rng_seed);
+        pick = randperm(numel(x_pool_repeated), n_locations);
+        x_locations_repeated = sort(x_pool_repeated(pick));
+    end
+end
+switch sample_design
+    case 'UniformRandom'
+        pick = randperm(numel(x_pool), n_train);
+        x_train = sort(x_pool(pick));
+    case 'LowRegionEnriched'
+        n_low = 10;
+        n_high = 2;
+        x_pool_lo = (0:sample_grid_step:1)';                        % [0, 1] on 0.1 grid
+        x_pool_hi = ((1 + sample_grid_step):sample_grid_step:x_max)'; % (1, 2] on 0.1 grid
+        assert(numel(x_pool_lo) >= n_low && numel(x_pool_hi) >= n_high, ...
+            'LowRegionEnriched: not enough grid points in a stratum.');
+        pick_lo = randperm(numel(x_pool_lo), n_low);
+        pick_hi = randperm(numel(x_pool_hi), n_high);
+        x_train = sort([x_pool_lo(pick_lo); x_pool_hi(pick_hi)]);
+    case 'LowRegionSparse'
+        n_low = 2;
+        n_high = 10;
+        x_pool_lo = (0:sample_grid_step:1)';                        % [0, 1] on 0.1 grid
+        x_pool_hi = ((1 + sample_grid_step):sample_grid_step:x_max)'; % (1, 2] on 0.1 grid
+        assert(numel(x_pool_lo) >= n_low && numel(x_pool_hi) >= n_high, ...
+            'LowRegionSparse: not enough grid points in a stratum.');
+        pick_lo = randperm(numel(x_pool_lo), n_low);
+        pick_hi = randperm(numel(x_pool_hi), n_high);
+        x_train = sort([x_pool_lo(pick_lo); x_pool_hi(pick_hi)]);
+    case 'LowRegionSparse_with0'
+        n_low = 2;
+        n_high = 10;
+        x_pool_lo = (0:sample_grid_step:1)';                        % [0, 1] on 0.1 grid
+        x_pool_hi = ((1 + sample_grid_step):sample_grid_step:x_max)'; % (1, 2] on 0.1 grid
+        assert(numel(x_pool_lo) >= n_low && numel(x_pool_hi) >= n_high, ...
+            'LowRegionSparse_with0: not enough grid points in a stratum.');
+        pick_lo = randperm(numel(x_pool_lo), n_low);
+        pick_hi = randperm(numel(x_pool_hi), n_high);
+        x_train = sort([x_pool_lo(pick_lo); x_pool_hi(pick_hi); 0]);  % + extra sample at S=0
+    case 'LowRegionMissing'
+        missing_grid_step = 0.05;
+        x_pool_hi_only = (1:missing_grid_step:x_max)';              % [1, 2] on 0.05 grid
+        assert(n_train <= numel(x_pool_hi_only), ...
+            'LowRegionMissing: n_train exceeds [1,2] grid size.');
+        pick = randperm(numel(x_pool_hi_only), n_train);
+        x_train = sort(x_pool_hi_only(pick));
+    case 'LowRegionMissing_with0'
+        missing_grid_step = 0.05;
+        x_pool_hi_only = (1:missing_grid_step:x_max)';              % [1, 2] on 0.05 grid
+        assert(n_train <= numel(x_pool_hi_only), ...
+            'LowRegionMissing_with0: n_train exceeds [1,2] grid size.');
+        pick = randperm(numel(x_pool_hi_only), n_train);
+        x_train = sort([x_pool_hi_only(pick); 0]);                  % + extra sample at S=0
+    case 'cutoff_0'
+        x_train = x_master_cutoff;   % all n_train evenly spaced points
+    case 'cutoff_0.1'
+        x_train = x_master_cutoff(x_master_cutoff >= 0.1);
+    case 'cutoff_0.25'
+        x_train = x_master_cutoff(x_master_cutoff >= 0.25);
+    case 'cutoff_0.5'
+        x_train = x_master_cutoff(x_master_cutoff >= 0.5);
+    case 'cutoff_0.75'
+        x_train = x_master_cutoff(x_master_cutoff >= 0.75);
+    case '12x1'
+        x_train = x_locations_repeated;
+    case '6x2'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case '4x3'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case '3x4'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case '6x2_random'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case '4x3_random'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case '4x3_random2'
+        x_train = repelem(x_locations_repeated, n_replicate);
+    case 'CustomFixed'
+        x_train = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 1, 1.8]';
+    otherwise
+        error('Unknown sample_design: %s', sample_design);
+end
+n_train = numel(x_train);
 v_true = mm_static(x_train);
 y_domain_max = mm_static(x_max);   % max on [0, x_max] for increasing MM
 noise_sd_true = noise_frac * y_domain_max;
@@ -322,6 +433,20 @@ fprintf('  latent max(fmu + k*sf - Vmax) = %.6g (<=0 if constraint satisfied)\n'
 fprintf('  obs    max(fmu + k*sy - Vmax) = %.6g (may exceed 0; not constrained)\n', max(fmu_Xc + k * sy_Xc - y_max));
 
 %% 4. Plot unconstrained vs constrained (latent f: fmu +/- k_plot*sqrt(fs2), k_plot=2)
+save_plots = ~is_custom_fixed_design;
+if is_cutoff_design
+    plot_experiment = 'C_Cutoffs';
+elseif is_repeated_meas_design
+    plot_experiment = 'D_RepeatedMeas';
+else
+    plot_experiment = 'B_SampleLocations';
+end
+plot_out_dir = fullfile(fileparts(fileparts(mfilename('fullpath'))), ...
+    'results', 'plots', '05192026', plot_experiment);
+if save_plots && ~isfolder(plot_out_dir)
+    mkdir(plot_out_dir);
+end
+
 k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
@@ -339,8 +464,8 @@ fprintf('Plot band on x_grid: max latent upper (k=%g) = %.4f (Vmax=%g)\n', k_plo
 x_lim_lo = 0;
 band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
 tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(tlo, sprintf('Michaelis-Menten GP: unconstrained vs constrained (ell_{ub}=%g)', ell_ub), ...
-    'Interpreter', 'none');
+title(tlo, sprintf('Michaelis-Menten GP (%s, n_{train}=%d): unconstrained vs constrained)', ...
+    sample_design, n_train), 'Interpreter', 'none');
 
 nexttile;
 hold on; grid on;
@@ -376,6 +501,16 @@ legend('Location', 'southeast');
 set(gca, 'FontSize', 11);
 ylim(ylim_unc);
 xlim([x_lim_lo, x_max]);
+
+if save_plots
+    plot_file = fullfile(plot_out_dir, [sample_design '.png']);
+    try
+        exportgraphics(gcf, plot_file, 'Resolution', 150);
+    catch
+        saveas(gcf, plot_file);
+    end
+    fprintf('Saved plot: %s\n', plot_file);
+end
 
 fprintf('\nGP optimization complete.\n');
 fprintf('Unconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
