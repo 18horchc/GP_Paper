@@ -1,4 +1,4 @@
-% Michaelis-Menten GP: unconstrained NLML vs probabilistic bound constraints.
+% Michaelis-Menten GP: unconstrained NLML vs bound constraints vs derivative observations.
 clear; clc; close all;
 
 %% MM parameters
@@ -17,6 +17,11 @@ y_domain_max = mm_static(x_max);
 noise_sd_true = noise_frac * y_domain_max;
 y_train = v_true + noise_sd_true * randn(size(v_true));
 n_train = numel(x_train);
+
+%% Derivative observations (Solak et al. 2002): df/dx at selected [S]
+x_deriv = [1; 1.5; 2];
+y_deriv = 0.3 * ones(3, 1);
+sn_deriv = 0.02;   % derivative observation noise (distinct from function noise sigma_n)
 
 %% Ground truth curve
 x_grid = linspace(0, x_max, 500);
@@ -62,6 +67,12 @@ y_col = y_train(:);
 fprintf('Optimizing hyperparameters (unconstrained NLML)...\n');
 hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+
+%% Derivative-observation GP (Solak-style augmented NLML)
+obj_deriv = @(h) gp_seiso_deriv_obs('nlml', h, x_col, y_col, x_deriv, y_deriv, [], sn_deriv);
+fprintf('\nOptimizing hyperparameters (derivative-observation NLML)...\n');
+hyp_deriv = minimize(hyp, obj_deriv, -100);
+nlml_deriv = obj_deriv(hyp_deriv);
 
 %% Probabilistic bound constraints (Pensoneault tails on latent f at X_c)
 hyp_tpl = hyp_unc;
@@ -149,7 +160,7 @@ fprintf('Final max(c) = %.6g (feasible if <= 0)\n', max(c_final));
 fprintf('  lower max(c) = %.6g | upper max(c) = %.6g | data max(c) = %.6g\n', ...
     max(c_final(1:nC)), max(c_final(nC+1:2*nC)), max(c_final(2*nC+1:end)));
 
-%% Plot unconstrained vs constrained
+%% Plot unconstrained vs bound-constrained vs derivative-observation GP
 k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
@@ -159,9 +170,18 @@ sf_unc = sqrt(max(fs2_unc(:), 0));
 m_con = fmu_con(:);
 sf_con = sqrt(max(fs2_con(:), 0));
 
+[~, ~, fmu_deriv, fs2_deriv] = gp_seiso_deriv_obs('pred', hyp_deriv, x_col, y_col, ...
+    x_deriv, y_deriv, x_grid(:), sn_deriv);
+m_deriv = fmu_deriv(:);
+sf_deriv = sqrt(max(fs2_deriv(:), 0));
+
+[m_deriv_at_xd, s2_deriv_at_xd] = gp_seiso_deriv_obs('deriv', hyp_deriv, x_col, y_col, ...
+    x_deriv, y_deriv, x_deriv, sn_deriv);
+mm_deriv_true = Vmax * Km ./ (Km + x_deriv).^2;
+
 band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
-tlo = tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(tlo, sprintf('Michaelis-Menten GP (n=%d, %.0f%% noise): unconstrained vs bound-constrained', ...
+tlo = tiledlayout(1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(tlo, sprintf('Michaelis-Menten GP (n=%d, %.0f%% noise): unconstrained vs bounds vs deriv-obs', ...
     n_train, 100 * noise_frac), 'Interpreter', 'none');
 
 nexttile;
@@ -195,10 +215,39 @@ legend('Location', 'southeast');
 ylim(ylim_unc);
 xlim([0, x_max]);
 
+nexttile;
+hold on; grid on;
+fill([x_grid, fliplr(x_grid)], [m_deriv + k_plot * sf_deriv; flipud(m_deriv - k_plot * sf_deriv)]', ...
+    [0.72, 0.62, 0.82], 'EdgeColor', 'none', 'FaceAlpha', 0.5, 'DisplayName', band_label);
+plot(x_grid, m_deriv, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean \mu_f');
+plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+    'DisplayName', sprintf('Data (\\sigma=%.2g)', noise_sd_true));
+for j = 1:numel(x_deriv)
+    xline(x_deriv(j), ':', 'Color', [0.45, 0.25, 0.55], 'LineWidth', 1, ...
+        'HandleVisibility', 'off');
+end
+yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
+xlabel('[S] (mM)'); ylabel('v_0 (\muM/s)');
+title(sprintf('Deriv-obs GP (\\ell=%.2f, NLML=%.2f)', exp(hyp_deriv.cov(1)), nlml_deriv), ...
+    'Interpreter', 'none');
+legend('Location', 'southeast');
+ylim(ylim_unc);
+xlim([0, x_max]);
+
 fprintf('\nUnconstrained: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_opt, exitflag);
+fprintf('Deriv-obs:     ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f\n', ...
+    exp(hyp_deriv.cov(1)), exp(hyp_deriv.cov(2)), exp(hyp_deriv.lik), sn_deriv, nlml_deriv);
+fprintf('\nPosterior f'' at derivative constraint points (target = %.3g, sn_deriv = %.3g):\n', ...
+    y_deriv(1), sn_deriv);
+fprintf('  [S]    target    post mean    post sd    MM analytic\n');
+for j = 1:numel(x_deriv)
+    fprintf('  %4.2f   %6.3f    %8.4f    %8.4f    %8.4f\n', ...
+        x_deriv(j), y_deriv(j), m_deriv_at_xd(j), sqrt(s2_deriv_at_xd(j)), mm_deriv_true(j));
+end
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
 hyp = hyp_tpl;
