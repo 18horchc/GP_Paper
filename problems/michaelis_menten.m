@@ -1,4 +1,4 @@
-% Michaelis-Menten GP: bounded baseline + virtual-obs augmented fit.
+% Michaelis-Menten GP: bounded baseline + Pensoneault upper-bound constrained fit.
 clear; clc; close all;
 
 %% MM parameters
@@ -8,11 +8,11 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 %% Training data ([S] in mM, v_0 in μM/s)
 x_max = 2;
-n_train = 3;
+n_train = 11;
 noise_frac = 0.05;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
 %x_train = [0.1;0.2;0.4;0.6;0.8;1;1.2;1.4;1.8;2]';%linspace(0, x_max, n_train)';
-%x_train = [0.0; 0.1;0.2;0.3;0.4;0.5;0.6;0.7;0.8;1.8;1.9;2.0];
-x_train = [ .5;1;1.5];
+x_train = [0.0; 0.1;0.2;0.3;0.4;0.5;0.6;0.7;0.8;1.8;1.9;2.0];
+
 
 rng(100);
 v_true_at_train = mm_static(x_train);
@@ -20,33 +20,27 @@ y_domain_max = mm_static(x_max);
 noise_sd_true = noise_frac * y_domain_max;
 y_train = v_true_at_train + noise_sd_true * randn(size(v_true_at_train));
 noise_sd_est = noise_sd_true;
-fprintf('Synthetic data: n=%d equally spaced on [0, %.1f], homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n', ...
-    n_train, x_max, noise_sd_true, 100 * noise_frac);
+fprintf('Synthetic data: n=%d on [0, %.1f], homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n', ...
+    numel(x_train), x_max, noise_sd_true, 100 * noise_frac);
 
-%% Virtual observations (heteroscedastic augmentation)
 x_obs = x_train(:);
 y_obs = y_train(:);
-n_obs = numel(y_obs);
 
-Vmax_prior = Vmax;
-S_high     = x_max;
-sigma_obs  = noise_sd_true;
-
-x_virt_zero = 0;
-y_virt_zero = 0;
-sigma_virt_zero = 0.01 * sigma_obs;
-
-x_virt_sat = S_high;
-y_virt_sat = Vmax_prior;
-sigma_virt_sat = 0.20 * Vmax_prior;
-
-x_aug = [x_obs; x_virt_zero; x_virt_sat];
-y_aug = [y_obs; y_virt_zero; y_virt_sat];
-sigma_aug = [sigma_obs * ones(n_obs, 1); sigma_virt_zero; sigma_virt_sat];
-noise_var_aug = sigma_aug.^2;
-
-fprintf('Virtual obs: v(0)=0 (sigma=%.4g) | v(%.1f)=%.1f (sigma=%.2f)\n', ...
-    sigma_virt_zero, S_high, Vmax_prior, sigma_virt_sat);
+% %% Virtual observations (heteroscedastic augmentation) — disabled
+% n_obs = numel(y_obs);
+% Vmax_prior = Vmax;
+% S_high     = x_max;
+% sigma_obs  = noise_sd_true;
+% x_virt_zero = 0;
+% y_virt_zero = 0;
+% sigma_virt_zero = 0.01 * sigma_obs;
+% x_virt_sat = S_high;
+% y_virt_sat = Vmax_prior;
+% sigma_virt_sat = 0.20 * Vmax_prior;
+% x_aug = [x_obs; x_virt_zero; x_virt_sat];
+% y_aug = [y_obs; y_virt_zero; y_virt_sat];
+% sigma_aug = [sigma_obs * ones(n_obs, 1); sigma_virt_zero; sigma_virt_sat];
+% noise_var_aug = sigma_aug.^2;
 
 %% Derivative observations (Solak et al. 2002): df/d[S] at selected [S]
 %x_deriv = [1; 1.2; 1.4; 1.6; 1.8];
@@ -57,11 +51,13 @@ fprintf('Virtual obs: v(0)=0 (sigma=%.4g) | v(%.1f)=%.1f (sigma=%.2f)\n', ...
 x_grid = linspace(0, x_max, 500);
 y_true = mm_static(x_grid);
 
-%% Constraint grid: Pensoneault monotonicity checks at X_c (disabled)
-% constraint_step = 1.0;
-% X_c = (0:constraint_step:x_max)';
-% n_constraint = 41;
-% X_c = linspace(0, x_max, n_constraint)';
+%% Pensoneault upper-bound constraint grid at X_c
+eta = 0.022;   % 2.2% tail probability
+k   = -sqrt(2) * erfinv(2 * eta - 1);
+n_constraint = 41;
+X_c = linspace(0, x_max, n_constraint)';
+y_max = Vmax;
+epsilon = 0.5;   % data fidelity: |y - y*(x)| <= epsilon
 
 %% GPML setup
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -84,8 +80,8 @@ sn0  = max(1e-3, noise_sd_true);
 hyp = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', log(sn0));
 
 ell_bounds_lo = 0.05;
-ell_ub = 5;   % cap length scale at domain width
-sf_bounds = [0.05, 35];
+ell_ub = 3;   % cap length scale at domain width
+sf_bounds = [0.05, 15];
 sn_bounds = [noise_sd_true, 2];   % floor sigma_n at known measurement noise
 
 meanfunc = @meanZero;
@@ -102,18 +98,99 @@ hyp_ub = log([ell_ub; sf_bounds(2); sn_bounds(2)]);
 to_hyp = @(theta) struct('mean', [], 'cov', theta(1:2), 'lik', theta(3));
 obj_unc = @(theta) gp(to_hyp(theta), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 theta0 = min(max([hyp.cov(:); hyp.lik], hyp_lb), hyp_ub);
-opts_unc = optimoptions('fmincon', 'Algorithm', 'sqp', 'Display', 'off');
+opts_unc = optimoptions('fmincon', 'Algorithm', 'interior-point', 'Display', 'off');
 fprintf('Optimizing hyperparameters (bounded NLML: ell in [%.2g, %.2g], sn >= %.4f)...\n', ...
     ell_bounds_lo, ell_ub, sn_bounds(1));
 [theta_unc, nlml_unc, exitflag_unc] = fmincon(obj_unc, theta0, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
 hyp_unc = to_hyp(theta_unc);
 
-%% Augmented GP with virtual observations (heteroscedastic NLML)
-obj_aug = @(h) gp_seiso_hetero_noise('nlml', h, x_aug, y_aug, noise_var_aug);
-hyp_aug = struct('mean', [], 'cov', hyp.cov, 'lik', []);
-fprintf('\nOptimizing hyperparameters (augmented heteroscedastic NLML)...\n');
-hyp_aug = minimize(hyp_aug, obj_aug, -100);
-nlml_aug = obj_aug(hyp_aug);
+%% Pensoneault-constrained GP (upper bound + data fidelity)
+hyp_tpl = hyp_unc;
+objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+nonlcon = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, k, y_max, epsilon);
+opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
+    'EnableFeasibilityMode', true, 'Display', 'off', ...
+    'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
+    'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
+nTry = 2000;
+nMultistart = 10;
+theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
+
+fprintf('\n=== Pensoneault GP (upper bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
+fprintf('eta = %.3g%% | k = %.4f | X_c: %d points | random starts: %d\n', ...
+    100 * eta, k, numel(X_c), nTry);
+
+feasible_starts = zeros(3, 0);
+best_feas_nlml = inf;
+best_feas_theta = nan(3, 1);
+rng(42);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = nonlcon(theta_try);
+    if max(c_try) <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = objfun(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+        end
+    end
+end
+nFeas = size(feasible_starts, 2);
+fprintf('Feasible random starts: %d / %d\n', nFeas, nTry);
+
+if nFeas > 0
+    nlml_feas = arrayfun(@(j) objfun(feasible_starts(:, j)), 1:nFeas);
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+else
+    fprintf('No feasible random start; using projected baseline theta.\n');
+    starts_for_fmincon = theta_unc_box;
+end
+starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
+starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
+
+best_nlml = inf;
+theta_opt = nan(3, 1);
+nlml_con = nan;
+exitflag_con = -99;
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    [theta_j, nlml_j, ef_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts_pens);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml_con = nlml_j;
+        exitflag_con = ef_j;
+    end
+end
+
+if ~isfinite(best_nlml)
+    if nFeas > 0
+        theta_opt = best_feas_theta;
+    else
+        theta_opt = theta_unc_box;
+    end
+    nlml_con = objfun(theta_opt);
+    exitflag_con = -99;
+    fprintf('Warning: no successful fmincon run; using fallback theta.\n');
+end
+
+hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
+[c_final, ~] = nonlcon(theta_opt);
+nC = numel(X_c);
+fprintf('Final max(c) = %.6g (feasible if <= 0)\n', max(c_final));
+fprintf('  upper max(c) = %.6g | data max(c) = %.6g\n', ...
+    max(c_final(1:nC)), max(c_final(nC+1:end)));
+
+% %% Augmented GP with virtual observations (heteroscedastic NLML) — disabled
+% obj_aug = @(h) gp_seiso_hetero_noise('nlml', h, x_aug, y_aug, noise_var_aug);
+% hyp_aug = struct('mean', [], 'cov', hyp.cov, 'lik', []);
+% fprintf('\nOptimizing hyperparameters (augmented heteroscedastic NLML)...\n');
+% hyp_aug = minimize(hyp_aug, obj_aug, -100);
+% nlml_aug = obj_aug(hyp_aug);
 
 %% Derivative-observation GP (Solak-style augmented NLML)
 % obj_deriv = @(h) gp_seiso_deriv_obs('nlml', h, x_col, y_col, x_deriv, y_deriv, [], sn_deriv);
@@ -292,19 +369,19 @@ nlml_aug = obj_aug(hyp_aug);
 % fprintf('  lower max(c) = %.6g | upper max(c) = %.6g | data max(c) = %.6g\n', ...
 %     max(c_final_comb(1:nC)), max(c_final_comb(nC+1:2*nC)), max(c_final_comb(2*nC+1:end)));
 
-%% Plot baseline vs augmented GP
+%% Plot baseline vs Pensoneault GP
 k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
 sf_unc = sqrt(max(fs2_unc(:), 0));
 
-[~, ~, fmu_aug, fs2_aug] = gp_seiso_hetero_noise('pred', hyp_aug, x_aug, y_aug, noise_var_aug, x_grid(:));
-m_aug = fmu_aug(:);
-sf_aug = sqrt(max(fs2_aug(:), 0));
+[~, ~, fmu_con, fs2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
+m_con = fmu_con(:);
+sf_con = sqrt(max(fs2_con(:), 0));
 
-% [~, ~, fmu_con, fs2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
-% m_con = fmu_con(:);
-% sf_con = sqrt(max(fs2_con(:), 0));
+% [~, ~, fmu_aug, fs2_aug] = gp_seiso_hetero_noise('pred', hyp_aug, x_aug, y_aug, noise_var_aug, x_grid(:));
+% m_aug = fmu_aug(:);
+% sf_aug = sqrt(max(fs2_aug(:), 0));
 
 % [m_deriv_at_xd, s2_deriv_at_xd] = gp_seiso_deriv_obs('deriv', hyp_con, x_col, y_col, ...
 %     x_deriv, y_deriv, x_deriv, sn_deriv);
@@ -328,7 +405,7 @@ sf_aug = sqrt(max(fs2_aug(:), 0));
 %     x_deriv, y_deriv, x_deriv, sn_deriv);
 
 band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
-ylim_unc = [0, max([y_train(:); Vmax; m_unc + k_plot * sf_unc; m_aug + k_plot * sf_aug]) * 1.02];
+ylim_unc = [0, max([y_train(:); Vmax; m_unc + k_plot * sf_unc; m_con + k_plot * sf_con]) * 1.02];
 
 fig = figure('Color', 'w', 'Position', [80, 80, 920, 620], ...
     'Name', sprintf('Michaelis-Menten GP'));
@@ -336,14 +413,12 @@ tg = uitabgroup(fig);
 
 tab_unc = uitab(tg, 'Title', 'Baseline');
 plot_mm_gp_tab(tab_unc, x_grid, x_max, m_unc, sf_unc, k_plot, band_label, ...
-    y_true, x_obs, y_obs, noise_sd_true, Vmax, ...
-    sprintf('Baseline GP'), ylim_unc);
+    y_true, x_obs, y_obs, noise_sd_true, Vmax, 'Baseline GP', ylim_unc);
 
-tab_aug = uitab(tg, 'Title', 'Virtual obs');
-plot_mm_gp_tab(tab_aug, x_grid, x_max, m_aug, sf_aug, k_plot, band_label, ...
+tab_pens = uitab(tg, 'Title', 'Pensoneault');
+plot_mm_gp_tab(tab_pens, x_grid, x_max, m_con, sf_con, k_plot, band_label, ...
     y_true, x_obs, y_obs, noise_sd_true, Vmax, ...
-    sprintf('Augmented GP'), ylim_unc, ...
-    [], x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
+    sprintf('Upper-bound GP'), ylim_unc);
 
 % tg = uitabgroup(fig);
 % tab_unc = uitab(tg, 'Title', 'Unconstrained');
@@ -369,10 +444,8 @@ plot_mm_gp_tab(tab_aug, x_grid, x_max, m_aug, sf_aug, k_plot, band_label, ...
 
 fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc, exitflag_unc);
-fprintf('Augmented:     ell=%.4f, sf=%.4f | NLML=%.4f (heteroscedastic noise, n_aug=%d)\n', ...
-    exp(hyp_aug.cov(1)), exp(hyp_aug.cov(2)), nlml_aug, numel(y_aug));
-% fprintf('Constrained:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
-%     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_opt, exitflag);
+fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_con, exitflag_con, max(c_final));
 % fprintf('\nPosterior f'' at Solak derivative observation points (sn_deriv = %.3g):\n', sn_deriv);
 % fprintf('  [S]    target    post mean    post sd    MM analytic\n');
 % for j = 1:numel(x_deriv)
@@ -396,13 +469,29 @@ fprintf('Augmented:     ell=%.4f, sf=%.4f | NLML=%.4f (heteroscedastic noise, n_
 %         x_deriv(j), y_deriv(j), m_deriv_at_xd_comb(j), sqrt(s2_deriv_at_xd_comb(j)), mm_deriv_true(j));
 % end
 
-% function hyp = theta_to_hyp(theta, hyp_tpl)
-% hyp = hyp_tpl;
-% hyp.cov  = theta(1:2);
-% hyp.lik  = theta(3);
-% hyp.mean = [];
-% end
-%
+function hyp = theta_to_hyp(theta, hyp_tpl)
+hyp = hyp_tpl;
+hyp.cov = theta(1:2);
+hyp.lik = theta(3);
+hyp.mean = [];
+end
+
+function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k, y_max, epsilon)
+% Pensoneault-style constraints: upper bound on latent f at X_c; data fidelity tube.
+hyp = theta_to_hyp(theta, hyp_tpl);
+nC = numel(X_c);
+xstar = [X_c(:); x(:)];
+[ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
+m_xc = fmu(1:nC);
+s_xc = sqrt(max(fs2(1:nC), 0));
+c_upper = m_xc + k .* s_xc - y_max;
+y_star = ymu(nC+1:end);
+c_data = abs(y - y_star) - epsilon;
+c = [c_upper; c_data(:)];
+ceq = [];
+end
+
 % function [m_deriv, s2_deriv] = gp_seiso_deriv_pred(hyp, x, y, X_c)
 % % Posterior predictive mean and variance of df/dx at each X_c under covSEiso + likGauss + meanZero.
 % ell = exp(hyp.cov(1));
