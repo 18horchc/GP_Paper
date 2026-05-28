@@ -1,4 +1,4 @@
-% Michaelis-Menten GP: bounded baseline + Pensoneault upper-bound constrained fit.
+% Michaelis-Menten GP: bounded baseline + Pensoneault upper-bound fit with Solak deriv obs.
 clear; clc; close all;
 
 %% MM parameters
@@ -42,10 +42,10 @@ y_obs = y_train(:);
 % sigma_aug = [sigma_obs * ones(n_obs, 1); sigma_virt_zero; sigma_virt_sat];
 % noise_var_aug = sigma_aug.^2;
 
-%% Derivative observations (Solak et al. 2002): df/d[S] at selected [S]
-%x_deriv = [1; 1.2; 1.4; 1.6; 1.8];
-%y_deriv = 0.3 * ones(numel(x_deriv), 1);
-%sn_deriv = 0.2;   % soft: larger => weaker derivative pull (Solak Gaussian noise on dY/dx)
+%% Derivative observations (Solak et al. 2002): virtual df/d[S] for monotonicity
+x_deriv = 1.2;
+y_deriv = 0.3;    % soft positive slope target in the data gap [0.8, 1.8]
+sn_deriv = 0.2;   % soft: larger => weaker derivative pull (Solak Gaussian noise on dY/dx)
 
 %% Ground truth curve
 x_grid = linspace(0, x_max, 500);
@@ -104,11 +104,12 @@ fprintf('Optimizing hyperparameters (bounded NLML: ell in [%.2g, %.2g], sn >= %.
 [theta_unc, nlml_unc, exitflag_unc] = fmincon(obj_unc, theta0, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
 hyp_unc = to_hyp(theta_unc);
 
-%% Pensoneault-constrained GP (upper bound + data fidelity)
+%% Pensoneault-constrained GP (upper bound + data fidelity + Solak deriv obs)
 hyp_tpl = hyp_unc;
-objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-nonlcon = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x_col, y_col, X_c, k, y_max, epsilon);
+objfun = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl), ...
+    x_col, y_col, x_deriv, y_deriv, [], sn_deriv);
+nonlcon = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl, ...
+    x_col, y_col, x_deriv, y_deriv, sn_deriv, X_c, k, y_max, epsilon);
 opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, 'Display', 'off', ...
     'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
@@ -117,9 +118,9 @@ nTry = 2000;
 nMultistart = 10;
 theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
 
-fprintf('\n=== Pensoneault GP (upper bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
-fprintf('eta = %.3g%% | k = %.4f | X_c: %d points | random starts: %d\n', ...
-    100 * eta, k, numel(X_c), nTry);
+fprintf('\n=== Pensoneault GP (upper bound + data fidelity + Solak deriv obs) ===\n');
+fprintf('eta = %.3g%% | k = %.4f | epsilon = %.4g | X_c: %d | deriv obs at [S]=%.1f (y''=%.3g, sn_deriv=%.3g) | random starts: %d\n', ...
+    100 * eta, k, epsilon, numel(X_c), x_deriv, y_deriv, sn_deriv, nTry);
 
 feasible_starts = zeros(3, 0);
 best_feas_nlml = inf;
@@ -375,9 +376,14 @@ k_plot = 2;
 m_unc = fmu_unc(:);
 sf_unc = sqrt(max(fs2_unc(:), 0));
 
-[~, ~, fmu_con, fs2_con] = gp(hyp_con, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
+[~, ~, fmu_con, fs2_con] = gp_seiso_deriv_obs('pred', hyp_con, x_col, y_col, ...
+    x_deriv, y_deriv, x_grid(:), sn_deriv);
 m_con = fmu_con(:);
 sf_con = sqrt(max(fs2_con(:), 0));
+
+[m_deriv_at_xd, s2_deriv_at_xd] = gp_seiso_deriv_obs('deriv', hyp_con, x_col, y_col, ...
+    x_deriv, y_deriv, x_deriv, sn_deriv);
+mm_deriv_true = Vmax * Km ./ (Km + x_deriv).^2;
 
 % [~, ~, fmu_aug, fs2_aug] = gp_seiso_hetero_noise('pred', hyp_aug, x_aug, y_aug, noise_var_aug, x_grid(:));
 % m_aug = fmu_aug(:);
@@ -418,7 +424,7 @@ plot_mm_gp_tab(tab_unc, x_grid, x_max, m_unc, sf_unc, k_plot, band_label, ...
 tab_pens = uitab(tg, 'Title', 'Pensoneault');
 plot_mm_gp_tab(tab_pens, x_grid, x_max, m_con, sf_con, k_plot, band_label, ...
     y_true, x_obs, y_obs, noise_sd_true, Vmax, ...
-    sprintf('Upper-bound GP'), ylim_unc);
+    sprintf('Upper-bound GP + Solak deriv obs'), ylim_unc, x_deriv);
 
 % tg = uitabgroup(fig);
 % tab_unc = uitab(tg, 'Title', 'Unconstrained');
@@ -444,14 +450,12 @@ plot_mm_gp_tab(tab_pens, x_grid, x_max, m_con, sf_con, k_plot, band_label, ...
 
 fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc, exitflag_unc);
-fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
-    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_con, exitflag_con, max(c_final));
-% fprintf('\nPosterior f'' at Solak derivative observation points (sn_deriv = %.3g):\n', sn_deriv);
-% fprintf('  [S]    target    post mean    post sd    MM analytic\n');
-% for j = 1:numel(x_deriv)
-%     fprintf('  %4.2f   %6.3f    %8.4f    %8.4f    %8.4f\n', ...
-%         x_deriv(j), y_deriv(j), m_deriv_at_xd(j), sqrt(s2_deriv_at_xd(j)), mm_deriv_true(j));
-% end
+fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), sn_deriv, nlml_con, exitflag_con, max(c_final));
+fprintf('\nPosterior f'' at Solak derivative observation (sn_deriv = %.3g):\n', sn_deriv);
+fprintf('  [S]    target    post mean    post sd    MM analytic\n');
+fprintf('  %4.2f   %6.3f    %8.4f    %8.4f    %8.4f\n', ...
+    x_deriv, y_deriv, m_deriv_at_xd, sqrt(s2_deriv_at_xd), mm_deriv_true);
 % fprintf('Deriv-obs:     ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f\n', ...
 %     exp(hyp_deriv.cov(1)), exp(hyp_deriv.cov(2)), exp(hyp_deriv.lik), sn_deriv, nlml_deriv);
 % fprintf('Combined:      ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f | exitflag=%d\n', ...
@@ -476,19 +480,20 @@ hyp.lik = theta(3);
 hyp.mean = [];
 end
 
-function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k, y_max, epsilon)
+function [c, ceq] = pens_constraints_upper_deriv(theta, hyp_tpl, x, y, x_d, y_d, sn_deriv, ...
+    X_c, k, y_max, epsilon)
 % Pensoneault-style constraints: upper bound on latent f at X_c; data fidelity tube.
+% Evaluated on the Solak augmented posterior (function + derivative observations).
 hyp = theta_to_hyp(theta, hyp_tpl);
 nC = numel(X_c);
 xstar = [X_c(:); x(:)];
-[ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
+[ymu, ~, fmu, fs2] = gp_seiso_deriv_obs('pred', hyp, x, y, x_d, y_d, xstar, sn_deriv);
 m_xc = fmu(1:nC);
 s_xc = sqrt(max(fs2(1:nC), 0));
 c_upper = m_xc + k .* s_xc - y_max;
 y_star = ymu(nC+1:end);
 c_data = abs(y - y_star) - epsilon;
-c = [c_upper; c_data(:)];
+c = [c_upper(:); c_data(:)];
 ceq = [];
 end
 
@@ -597,17 +602,17 @@ xlabel(ax, '[S] (mM)'); ylabel(ax, 'v_0 (\muM/s)');
 title(ax, panel_title, 'Interpreter', 'none');
 xlim(ax, [0, x_max]);
 ylim(ax, ylim_fixed);
-% if ~isempty(x_deriv)
-%     x_mark = x_deriv(:);
-%     x_mark = x_mark(x_mark >= 0 & x_mark <= x_max);
-%     if ~isempty(x_mark)
-%         y_axis = ax.YLim(1);
-%         h_deriv = plot(ax, x_mark, repmat(y_axis, numel(x_mark), 1), '^', ...
-%             'MarkerSize', 9, 'LineWidth', 0.8, ...
-%             'MarkerFaceColor', [0.55, 0.25, 0.65], 'MarkerEdgeColor', 'k', ...
-%             'Clipping', 'off', 'DisplayName', 'Solak deriv obs locations');
-%         uistack(h_deriv, 'top');
-%     end
-% end
+if ~isempty(x_deriv)
+    x_mark = x_deriv(:);
+    x_mark = x_mark(x_mark >= 0 & x_mark <= x_max);
+    if ~isempty(x_mark)
+        y_axis = ax.YLim(1);
+        h_deriv = plot(ax, x_mark, repmat(y_axis, numel(x_mark), 1), '^', ...
+            'MarkerSize', 9, 'LineWidth', 0.8, ...
+            'MarkerFaceColor', [0.55, 0.25, 0.65], 'MarkerEdgeColor', 'k', ...
+            'Clipping', 'off', 'DisplayName', 'Solak deriv obs locations');
+        uistack(h_deriv, 'top');
+    end
+end
 legend(ax, 'Location', 'southeast');
 end
