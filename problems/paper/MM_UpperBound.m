@@ -61,8 +61,6 @@ hyp = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', log(sn0));
 ell_bounds_lo = 0.05;
 ell_ub = 3;   % cap length scale at domain width
 sf_bounds = [0.05, 15];
-sn_bounds = [noise_sd_true, 2];   % floor sigma_n at known measurement noise
-
 meanfunc = @meanZero;
 covfunc  = @covSEiso;
 likfunc  = @likGauss;
@@ -71,19 +69,18 @@ inffunc  = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-%% Baseline GP (bounded NLML: sigma_n floor, ell cap)
-hyp_lb = log([ell_bounds_lo; sf_bounds(1); sn_bounds(1)]);
-hyp_ub = log([ell_ub; sf_bounds(2); sn_bounds(2)]);
-to_hyp = @(theta) struct('mean', [], 'cov', theta(1:2), 'lik', theta(3));
-obj_unc = @(theta) gp(to_hyp(theta), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-theta0 = min(max([hyp.cov(:); hyp.lik], hyp_lb), hyp_ub);
-opts_unc = optimoptions('fmincon', 'Algorithm', 'interior-point', 'Display', 'off');
-fprintf('Optimizing hyperparameters (bounded NLML: ell in [%.2g, %.2g], sn >= %.4f)...\n', ...
-    ell_bounds_lo, ell_ub, sn_bounds(1));
-[theta_unc, nlml_unc, exitflag_unc] = fmincon(obj_unc, theta0, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
-hyp_unc = to_hyp(theta_unc);
+%% Baseline GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
+sn_fixed = log(noise_sd_true);
+fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
+obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
+hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
+nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+theta_unc = hyp_unc.cov(:);
 
-%% Pensoneault-constrained GP (upper bound + data fidelity)
+%% Pensoneault-constrained GP (upper bound + data fidelity; sigma_n fixed)
+hyp_lb = log([ell_bounds_lo; sf_bounds(1)]);
+hyp_ub = log([ell_ub; sf_bounds(2)]);
 hyp_tpl = hyp_unc;
 objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 nonlcon = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
@@ -100,12 +97,12 @@ fprintf('\n=== Pensoneault GP (upper bound + data fidelity, epsilon = %.4g) ===\
 fprintf('eta = %.3g%% | k = %.4f | X_c: %d points | random starts: %d\n', ...
     100 * eta, k, numel(X_c), nTry);
 
-feasible_starts = zeros(3, 0);
+feasible_starts = zeros(2, 0);
 best_feas_nlml = inf;
-best_feas_theta = nan(3, 1);
+best_feas_theta = nan(2, 1);
 rng(42);
 for t = 1:nTry
-    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    theta_try = hyp_lb + rand(2, 1) .* (hyp_ub - hyp_lb);
     [c_try, ~] = nonlcon(theta_try);
     if max(c_try) <= 0
         feasible_starts = [feasible_starts, theta_try];
@@ -131,7 +128,7 @@ starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
 starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
 
 best_nlml = inf;
-theta_opt = nan(3, 1);
+theta_opt = nan(2, 1);
 nlml_con = nan;
 exitflag_con = -99;
 nStarts = size(starts_for_fmincon, 2);
@@ -206,15 +203,14 @@ for p = 1:2
     legend('Location', 'southeast');
 end
 
-fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc, exitflag_unc);
+fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_con, exitflag_con, max(c_final));
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
 hyp = hyp_tpl;
 hyp.cov = theta(1:2);
-hyp.lik = theta(3);
 hyp.mean = [];
 end
 

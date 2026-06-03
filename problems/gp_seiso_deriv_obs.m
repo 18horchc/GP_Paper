@@ -1,12 +1,18 @@
-function varargout = gp_seiso_deriv_obs(mode, hyp, x, y, x_d, y_d, xs, sn_deriv)
+function varargout = gp_seiso_deriv_obs(mode, hyp, x, y, x_d, y_d, xs, sn_deriv, fix_sn_obs)
 %GP_SEISO_DERIV_OBS Solak-style GP with function + derivative observations (SE-iso).
 %   nlml = gp_seiso_deriv_obs('nlml', hyp, x, y, x_d, y_d, [], sn_deriv)
+%   nlml = gp_seiso_deriv_obs('nlml', hyp, x, y, x_d, y_d, [], sn_deriv, true)
+%       with fix_sn_obs true, hyp.lik is fixed and NLML gradients are w.r.t. hyp.cov only.
 %   [ymu, ys2, fmu, fs2] = gp_seiso_deriv_obs('pred', hyp, x, y, x_d, y_d, xs, sn_deriv)
 %   [m_deriv, s2_deriv] = gp_seiso_deriv_obs('deriv', hyp, x, y, x_d, y_d, xs, sn_deriv)
 
+if nargin < 9
+    fix_sn_obs = false;
+end
+
 switch lower(mode)
     case 'nlml'
-        [varargout{1:nargout}] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv);
+        [varargout{1:nargout}] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs);
     case 'pred'
         [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = ...
             pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv);
@@ -17,27 +23,33 @@ switch lower(mode)
 end
 end
 
-function [nlml, dnll] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv)
+function [nlml, dnll] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs)
+if nargin < 7
+    fix_sn_obs = false;
+end
 [Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv);
 L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
 nlml = 0.5 * (z' * alpha) + sum(log(diag(L))) + 0.5 * nTot * log(2 * pi);
 
 if nargout > 1
-    p = [hyp.cov(:); hyp.lik(:)];
+    nCov = 2;
+    if fix_sn_obs
+        p = hyp.cov(:);
+    else
+        p = [hyp.cov(:); hyp.lik(:)];
+    end
     dnll_vec = zeros(numel(p), 1);
     step = 1e-4;
     for i = 1:numel(p)
         hp = hyp;
-        hp.cov = p(1:2);
-        hp.lik = p(3);
-        if i <= 2
+        if i <= nCov
             hp.cov(i) = hp.cov(i) + step;
         else
             hp.lik(1) = hp.lik(1) + step;
         end
         nlml_p = nlml_value(hp, x, y, x_d, y_d, sn_deriv);
-        if i <= 2
+        if i <= nCov
             hp.cov(i) = hp.cov(i) - 2 * step;
         else
             hp.lik(1) = hp.lik(1) - 2 * step;
@@ -46,8 +58,12 @@ if nargout > 1
         dnll_vec(i) = (nlml_p - nlml_m) / (2 * step);
     end
     dnll = hyp;
-    dnll.cov = dnll_vec(1:2);
-    dnll.lik = dnll_vec(3);
+    dnll.cov = dnll_vec(1:nCov);
+    if fix_sn_obs
+        dnll.lik = [];
+    else
+        dnll.lik = dnll_vec(nCov + 1);
+    end
     dnll.mean = [];
 end
 end

@@ -12,7 +12,7 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 x_max = 2;
 n_train = 3;
 noise_frac = 0.05;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
-x_train = [.5; 1; 1.5];
+x_train = [0.5; 1; 1.5];
 
 rng(100);
 v_true_at_train = mm_static(x_train);
@@ -71,11 +71,6 @@ sf0  = std(y_train);
 sn0  = max(1e-3, noise_sd_true);
 hyp = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', log(sn0));
 
-ell_bounds_lo = 0.05;
-ell_ub = 5;   % cap length scale at domain width
-sf_bounds = [0.05, 35];
-sn_bounds = [noise_sd_true, 2];   % floor sigma_n at known measurement noise
-
 meanfunc = @meanZero;
 covfunc  = @covSEiso;
 likfunc  = @likGauss;
@@ -84,17 +79,13 @@ inffunc  = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-%% Unconstrained GP (bounded NLML: sigma_n floor, ell cap)
-hyp_lb = log([ell_bounds_lo; sf_bounds(1); sn_bounds(1)]);
-hyp_ub = log([ell_ub; sf_bounds(2); sn_bounds(2)]);
-to_hyp = @(theta) struct('mean', [], 'cov', theta(1:2), 'lik', theta(3));
-obj_unc = @(theta) gp(to_hyp(theta), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-theta0 = min(max([hyp.cov(:); hyp.lik], hyp_lb), hyp_ub);
-opts_unc = optimoptions('fmincon', 'Algorithm', 'sqp', 'Display', 'off');
-fprintf('Optimizing hyperparameters (bounded NLML: ell in [%.2g, %.2g], sn >= %.4f)...\n', ...
-    ell_bounds_lo, ell_ub, sn_bounds(1));
-[theta_unc, nlml_unc, exitflag_unc] = fmincon(obj_unc, theta0, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
-hyp_unc = to_hyp(theta_unc);
+%% Baseline GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
+sn_fixed = log(noise_sd_true);
+fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
+obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
+hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
+nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 
 %% Augmented GP with virtual observations (heteroscedastic NLML)
 obj_aug = @(h) gp_seiso_hetero_noise('nlml', h, x_aug, y_aug, noise_var_aug);
@@ -122,7 +113,7 @@ tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 panels(1) = struct('m', m_unc, 'sf', sf_unc, 'title', 'Baseline GP', ...
     'show_virt', false);
-panels(2) = struct('m', m_aug, 'sf', sf_aug, 'title', 'Augmented GP', ...
+panels(2) = struct('m', m_aug, 'sf', sf_aug, 'title', 'Virtual Obs GP', ...
     'show_virt', true);
 
 for p = 1:2
@@ -155,7 +146,7 @@ for p = 1:2
     legend('Location', 'southeast');
 end
 
-fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc, exitflag_unc);
+fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Augmented:     ell=%.4f, sf=%.4f | NLML=%.4f (heteroscedastic noise, n_aug=%d)\n', ...
     exp(hyp_aug.cov(1)), exp(hyp_aug.cov(2)), nlml_aug, numel(y_aug));

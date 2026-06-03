@@ -65,8 +65,6 @@ hyp = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', log(sn0));
 ell_bounds_lo = 0.05;
 ell_ub = 3;
 sf_bounds = [0.05, 15];
-sn_bounds = [noise_sd_true, 2];
-
 meanfunc = @meanZero;
 covfunc  = @covSEiso;
 likfunc  = @likGauss;
@@ -75,10 +73,9 @@ inffunc  = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-hyp_lb = log([ell_bounds_lo; sf_bounds(1); sn_bounds(1)]);
-hyp_ub = log([ell_ub; sf_bounds(2); sn_bounds(2)]);
-to_hyp = @(theta) struct('mean', [], 'cov', theta(1:2), 'lik', theta(3));
-opts_unc = optimoptions('fmincon', 'Algorithm', 'interior-point', 'Display', 'off');
+sn_fixed = log(noise_sd_true);
+hyp_lb = log([ell_bounds_lo; sf_bounds(1)]);
+hyp_ub = log([ell_ub; sf_bounds(2)]);
 opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, 'Display', 'off', ...
     'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
@@ -86,14 +83,14 @@ opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
 nTry = 2000;
 nMultistart = 10;
 
-%% 1. Unconstrained GP (bounded NLML: sigma_n floor, ell cap)
-obj_unc = @(theta) gp(to_hyp(theta), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-theta0 = min(max([hyp.cov(:); hyp.lik], hyp_lb), hyp_ub);
-fprintf('=== Unconstrained GP ===\n');
-fprintf('Optimizing hyperparameters (bounded NLML: ell in [%.2g, %.2g], sn >= %.4f)...\n', ...
-    ell_bounds_lo, ell_ub, sn_bounds(1));
-[theta_unc, nlml_unc, exitflag_unc] = fmincon(obj_unc, theta0, [], [], [], [], hyp_lb, hyp_ub, [], opts_unc);
-hyp_unc = to_hyp(theta_unc);
+%% 1. Baseline GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
+fprintf('=== Baseline GP ===\n');
+fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
+obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
+hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
+nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+theta_unc = hyp_unc.cov(:);
 
 %% 2. Pensoneault bound only (upper bound + data fidelity; no deriv obs)
 fprintf('\n=== Pensoneault bound only ===\n');
@@ -102,7 +99,7 @@ obj_bound = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc
 nonlcon_bound = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x_col, y_col, X_c, k, y_max, epsilon);
 [hyp_bound, nlml_bound, exitflag_bound, c_bound] = fit_fmincon_multistart( ...
-    obj_bound, nonlcon_bound, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 42);
+    obj_bound, nonlcon_bound, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 42, sn_fixed);
 nC = numel(X_c);
 fprintf('Final max(c) = %.6g | upper max(c) = %.6g | data max(c) = %.6g\n', ...
     max(c_bound), max(c_bound(1:nC)), max(c_bound(nC+1:end)));
@@ -115,7 +112,7 @@ obj_d12 = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl), ...
 nonlcon_d12 = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl, ...
     x_col, y_col, x_deriv_12, y_deriv_12, sn_deriv, X_c, k, y_max, epsilon);
 [hyp_d12, nlml_d12, exitflag_d12, c_d12] = fit_fmincon_multistart( ...
-    obj_d12, nonlcon_d12, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 43);
+    obj_d12, nonlcon_d12, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 43, sn_fixed);
 fprintf('Final max(c) = %.6g | upper max(c) = %.6g | data max(c) = %.6g\n', ...
     max(c_d12), max(c_d12(1:nC)), max(c_d12(nC+1:end)));
 
@@ -127,7 +124,7 @@ obj_d1012 = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl), ..
 nonlcon_d1012 = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl, ...
     x_col, y_col, x_deriv_10_12, y_deriv_10_12, sn_deriv, X_c, k, y_max, epsilon);
 [hyp_d1012, nlml_d1012, exitflag_d1012, c_d1012] = fit_fmincon_multistart( ...
-    obj_d1012, nonlcon_d1012, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 44);
+    obj_d1012, nonlcon_d1012, theta_unc, hyp_lb, hyp_ub, opts_pens, nTry, nMultistart, 44, sn_fixed);
 fprintf('Final max(c) = %.6g | upper max(c) = %.6g | data max(c) = %.6g\n', ...
     max(c_d1012), max(c_d1012(1:nC)), max(c_d1012(nC+1:end)));
 
@@ -161,21 +158,21 @@ fig = figure('Color', 'w', 'Position', [80, 80, 1100, 640], ...
 tg = uitabgroup(fig);
 
 tab_gp = uitab(tg, 'Title', 'Baseline & bound');
-panels_gp(1) = struct('m', m_unc, 'sf', sf_unc, 'title', 'Unconstrained GP', 'x_deriv', []);
-panels_gp(2) = struct('m', m_bound, 'sf', sf_bound, 'title', 'Bound only', 'x_deriv', []);
+panels_gp(1) = struct('m', m_unc, 'sf', sf_unc, 'title', 'Baseline GP', 'x_deriv', []);
+panels_gp(2) = struct('m', m_bound, 'sf', sf_bound, 'title', 'Upper-bound GP', 'x_deriv', []);
 plot_tiled_gp_panels(tab_gp, panels_gp, x_grid, x_max, k_plot, band_label, ...
     y_true, x_obs, y_obs, Vmax, ylim_all);
 
 tab_deriv = uitab(tg, 'Title', 'Bound & deriv');
 panels_d = struct('m', {m_d12, m_d1012}, 'sf', {sf_d12, sf_d1012}, ...
-    'title', {sprintf('Bound + deriv (S=1.2, f''=%.2g)', y_deriv_target), ...
-    sprintf('Bound + deriv (S=1.0, 1.2, f''=%.2g)', y_deriv_target)}, ...
+    'title', {sprintf('Upper-bound + One Deriv Obs'), ...
+    sprintf('Upper-bound + Two Deriv Obs')}, ...
     'x_deriv', {x_deriv_12(:), x_deriv_10_12(:)});
 plot_tiled_gp_panels(tab_deriv, panels_d, x_grid, x_max, k_plot, band_label, ...
     y_true, x_obs, y_obs, Vmax, ylim_all);
 
-fprintf('\nUnconstrained:  ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d\n', ...
-    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc, exitflag_unc);
+fprintf('\nBaseline:       ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
+    exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Bound only:     ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(hyp_bound.cov(1)), exp(hyp_bound.cov(2)), exp(hyp_bound.lik), nlml_bound, exitflag_bound, max(c_bound));
 fprintf('Bound+deriv S=1.2:  ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
@@ -184,15 +181,15 @@ fprintf('Bound+deriv S=1,1.2: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=
     exp(hyp_d1012.cov(1)), exp(hyp_d1012.cov(2)), exp(hyp_d1012.lik), nlml_d1012, exitflag_d1012, max(c_d1012));
 
 function [hyp_fit, nlml_fit, exitflag_fit, c_final] = fit_fmincon_multistart( ...
-    objfun, nonlcon, theta_unc, hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed)
+    objfun, nonlcon, theta_unc, hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed, sn_fixed)
 theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
 fprintf('eta multistart: %d random starts\n', nTry);
-feasible_starts = zeros(3, 0);
+feasible_starts = zeros(2, 0);
 best_feas_nlml = inf;
-best_feas_theta = nan(3, 1);
+best_feas_theta = nan(2, 1);
 rng(rng_seed);
 for t = 1:nTry
-    theta_try = hyp_lb + rand(3, 1) .* (hyp_ub - hyp_lb);
+    theta_try = hyp_lb + rand(2, 1) .* (hyp_ub - hyp_lb);
     [c_try, ~] = nonlcon(theta_try);
     if max(c_try) <= 0
         feasible_starts = [feasible_starts, theta_try];
@@ -216,7 +213,7 @@ end
 starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
 starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
 best_nlml = inf;
-theta_opt = nan(3, 1);
+theta_opt = nan(2, 1);
 nlml_fit = nan;
 exitflag_fit = -99;
 nStarts = size(starts_for_fmincon, 2);
@@ -240,14 +237,13 @@ if ~isfinite(best_nlml)
     exitflag_fit = -99;
     fprintf('Warning: no successful fmincon run; using fallback theta.\n');
 end
-hyp_fit = struct('mean', [], 'cov', theta_opt(1:2), 'lik', theta_opt(3));
+hyp_fit = struct('mean', [], 'cov', theta_opt(1:2), 'lik', sn_fixed);
 [c_final, ~] = nonlcon(theta_opt);
 end
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
 hyp = hyp_tpl;
 hyp.cov = theta(1:2);
-hyp.lik = theta(3);
 hyp.mean = [];
 end
 

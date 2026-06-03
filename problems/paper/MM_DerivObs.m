@@ -59,9 +59,12 @@ inffunc  = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-%% Baseline GP (GPML minimize on observed data only)
-fprintf('Optimizing hyperparameters (unconstrained NLML)...\n');
-hyp_unc = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+%% Baseline GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
+sn_fixed = log(noise_sd_true);
+fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
+obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
+hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
 nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 
 %% Solak derivative-observation GP (augmented NLML; Pensoneault disabled)
@@ -70,10 +73,12 @@ fprintf('\n=== Solak deriv obs only (no Pensoneault) ===\n');
 fprintf('deriv obs: %d at [S] in [%.1f, %.1f] | y_deriv = %.3g | sn_deriv = %.4g\n', ...
     numel(x_deriv), min(x_deriv), max(x_deriv), y_deriv(1), sn_deriv);
 
-obj_deriv = @(h) gp_seiso_deriv_obs('nlml', h, x_col, y_col, x_deriv, y_deriv, [], sn_deriv);
-fprintf('Optimizing hyperparameters (Solak augmented NLML)...\n');
-hyp_con = minimize(hyp_tpl, obj_deriv, -100);
-nlml_opt = obj_deriv(hyp_con);
+obj_deriv = @(hyp_cov) gp_seiso_deriv_obs_nlml_cov_only(hyp_cov, sn_fixed, x_col, y_col, ...
+    x_deriv, y_deriv, sn_deriv);
+fprintf('Optimizing augmented GP (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
+hyp_cov_con = minimize(hyp_unc.cov, obj_deriv, -100);
+hyp_con = struct('mean', [], 'cov', hyp_cov_con(:), 'lik', sn_fixed);
+nlml_opt = obj_deriv(hyp_cov_con);
 exitflag = 1;
 
 %% Plot baseline vs Solak-augmented GP
@@ -99,7 +104,7 @@ figure('Color', 'w', 'Position', [80, 80, 1100, 520], ...
 tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 panels(1) = struct('m', m_unc, 'sf', sf_unc, 'title', 'Baseline GP', 'show_deriv', false);
-panels(2) = struct('m', m_con, 'sf', sf_con, 'title', 'Augmented GP', 'show_deriv', true);
+panels(2) = struct('m', m_con, 'sf', sf_con, 'title', 'Virtual Deriv Obs GP', 'show_deriv', true);
 
 for p = 1:2
     ax = nexttile;
