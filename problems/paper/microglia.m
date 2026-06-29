@@ -9,7 +9,7 @@ datapointsM1 = [5, 27.5, 122.5, 139.8, 445, 816.67]; %Experimental measurements 
 
 % full data
 % Individual measurements compiled from the experimental studies (Fig. 1 / Table 1).
-% Each study (color) reports at its own time points, so several measurements
+% Each study reports at its own time points, so several measurements
 % share the same time. Columns are grouped by study to match the tables.
 timeM1 = [0, 1, 3, 5, 7, 14, ...   % Hu2012
           3, 7, ...                % Li2018
@@ -236,6 +236,124 @@ ylabel('cells/mm^2', 'fontsize', 20)
 title('M2 Pensoneault lower-bound GP')
 legend('Location', 'northwest')
 ylim(ylim_bound)
+set(gca, 'fontsize', 20)
+
+
+%% GP on averaged data
+% Unconstrained SE-kernel GP fits on per-timepoint averages (newtime, datapointsM1/M2).
+
+[gpM1_avg.hyp, gpM1_avg.mu, gpM1_avg.s2] = fit_gp(newtime', datapointsM1', tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc);
+[gpM2_avg.hyp, gpM2_avg.mu, gpM2_avg.s2] = fit_gp(newtime', datapointsM2', tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc);
+
+sdM1_avg = sqrt(max(gpM1_avg.s2, 0));
+sdM2_avg = sqrt(max(gpM2_avg.s2, 0));
+
+figure(102)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+% M1 subplot (left)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_avg.mu + k_plot*sdM1_avg; flipud(gpM1_avg.mu - k_plot*sdM1_avg)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_avg.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 GP mean')
+sM1_avg = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg.Marker = 'hexagram';
+sM1_avg.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 GP fit (averaged data)')
+legend('Location', 'northwest')
+set(gca, 'fontsize', 20)
+
+% M2 subplot (right)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_avg.mu + k_plot*sdM2_avg; flipud(gpM2_avg.mu - k_plot*sdM2_avg)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_avg.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 GP mean')
+sM2_avg = scatter(newtime, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg.Marker = 'hexagram';
+sM2_avg.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 GP fit (averaged data)')
+legend('Location', 'northwest')
+set(gca, 'fontsize', 20)
+
+
+%% Bounded GP on averaged data
+% Pensoneault lower bound at 0 on averaged data; reuses X_c, k_pens, opts_pens from above.
+
+sf_bounds_avg_M1 = [0.05, max(15, 1.5 * std(datapointsM1))];
+sf_bounds_avg_M2 = [0.05, max(15, 1.5 * std(datapointsM2))];
+hyp_lb_avg_M1 = log([ell_bounds_lo; sf_bounds_avg_M1(1)]);
+hyp_ub_avg_M1 = log([ell_ub; sf_bounds_avg_M1(2)]);
+hyp_lb_avg_M2 = log([ell_bounds_lo; sf_bounds_avg_M2(1)]);
+hyp_ub_avg_M2 = log([ell_ub; sf_bounds_avg_M2(2)]);
+
+fprintf('\n=== Pensoneault GP on averaged data (lower bound at 0) ===\n');
+
+[gpM1_avg_bound.hyp, gpM1_avg_bound.mu, gpM1_avg_bound.s2, gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c] = ...
+    fit_gp_lower_bound(newtime', datapointsM1', gpM1_avg.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, nTry, nMultistart, 44);
+[gpM2_avg_bound.hyp, gpM2_avg_bound.mu, gpM2_avg_bound.s2, gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c] = ...
+    fit_gp_lower_bound(newtime', datapointsM2', gpM2_avg.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, nTry, nMultistart, 45);
+
+fprintf('M1 avg bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM1_avg_bound.hyp.cov(1)), exp(gpM1_avg_bound.hyp.cov(2)), exp(gpM1_avg_bound.hyp.lik), ...
+    gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c);
+fprintf('M2 avg bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM2_avg_bound.hyp.cov(1)), exp(gpM2_avg_bound.hyp.cov(2)), exp(gpM2_avg_bound.hyp.lik), ...
+    gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c);
+
+sdM1_avg_bound = sqrt(max(gpM1_avg_bound.s2, 0));
+sdM2_avg_bound = sqrt(max(gpM2_avg_bound.s2, 0));
+ylim_avg_bound = [0, max([datapointsM1(:); datapointsM2(:); ...
+    gpM1_avg_bound.mu + k_plot * sdM1_avg_bound; gpM2_avg_bound.mu + k_plot * sdM2_avg_bound]) * 1.05];
+
+figure(103)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+% M1 subplot (left)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_avg_bound.mu + k_plot*sdM1_avg_bound; flipud(gpM1_avg_bound.mu - k_plot*sdM1_avg_bound)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_avg_bound.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 bounded GP mean')
+sM1_avg_b = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg_b.Marker = 'hexagram';
+sM1_avg_b.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 Pensoneault lower-bound GP (averaged data)')
+legend('Location', 'northwest')
+ylim(ylim_avg_bound)
+set(gca, 'fontsize', 20)
+
+% M2 subplot (right)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_avg_bound.mu + k_plot*sdM2_avg_bound; flipud(gpM2_avg_bound.mu - k_plot*sdM2_avg_bound)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_avg_bound.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 bounded GP mean')
+sM2_avg_b = scatter(newtime, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg_b.Marker = 'hexagram';
+sM2_avg_b.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 Pensoneault lower-bound GP (averaged data)')
+legend('Location', 'northwest')
+ylim(ylim_avg_bound)
 set(gca, 'fontsize', 20)
 
 
