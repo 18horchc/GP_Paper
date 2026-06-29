@@ -108,6 +108,7 @@ ylabel('cells/mm^2', 'fontsize', 20)
 legend({'M1 GP mean', 'M1 data', 'M2 GP mean', 'M2 data'}, 'Location', 'northwest')
 title('GP fits with 95% uncertainty bands')
 set(gca, 'fontsize', 20)
+xlim([0, 14])
 
 % --- Separate subplots for M1 and M2 ---
 figure(100)
@@ -127,6 +128,8 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M1 GP fit with 95% uncertainty band')
 legend('Location', 'northwest')
+ylim([-500, 1400])
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 % M2 subplot (right)
@@ -143,6 +146,8 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M2 GP fit with 95% uncertainty band')
 legend('Location', 'northwest')
+ylim([-500, 1400])
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
@@ -218,6 +223,7 @@ ylabel('cells/mm^2', 'fontsize', 20)
 title('M1 Pensoneault lower-bound GP')
 legend('Location', 'northwest')
 ylim(ylim_bound)
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 % M2 subplot (right)
@@ -236,6 +242,7 @@ ylabel('cells/mm^2', 'fontsize', 20)
 title('M2 Pensoneault lower-bound GP')
 legend('Location', 'northwest')
 ylim(ylim_bound)
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
@@ -267,6 +274,8 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M1 GP fit (averaged data)')
 legend('Location', 'northwest')
+ylim([-100, 1000])
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 % M2 subplot (right)
@@ -283,12 +292,12 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M2 GP fit (averaged data)')
 legend('Location', 'northwest')
+ylim([-100, 1000])
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
-%% Bounded GP on averaged data
-% Pensoneault lower bound at 0 on averaged data; reuses X_c, k_pens, opts_pens from above.
-
+% Hyperparameter bounds for averaged-data bounded GPs (shared by sweep and figure 103)
 sf_bounds_avg_M1 = [0.05, max(15, 1.5 * std(datapointsM1))];
 sf_bounds_avg_M2 = [0.05, max(15, 1.5 * std(datapointsM2))];
 hyp_lb_avg_M1 = log([ell_bounds_lo; sf_bounds_avg_M1(1)]);
@@ -296,21 +305,66 @@ hyp_ub_avg_M1 = log([ell_ub; sf_bounds_avg_M1(2)]);
 hyp_lb_avg_M2 = log([ell_bounds_lo; sf_bounds_avg_M2(1)]);
 hyp_ub_avg_M2 = log([ell_ub; sf_bounds_avg_M2(2)]);
 
-fprintf('\n=== Pensoneault GP on averaged data (lower bound at 0) ===\n');
 
-[gpM1_avg_bound.hyp, gpM1_avg_bound.mu, gpM1_avg_bound.s2, gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c] = ...
+%% Epsilon sweep (averaged data, lower bound + data fidelity)
+% Sweep data-fidelity tube width epsilon to assess feasibility and fit quality.
+% Commented out by default — uncomment block below to re-run diagnostic sweep.
+
+%{
+epsilon_grid = 50:5:100;
+n_eps = numel(epsilon_grid);
+sweep_M1 = struct('nFeas', nan(n_eps, 1), 'exitflag', nan(n_eps, 1), ...
+    'nlml', nan(n_eps, 1), 'max_c', nan(n_eps, 1));
+sweep_M2 = struct('nFeas', nan(n_eps, 1), 'exitflag', nan(n_eps, 1), ...
+    'nlml', nan(n_eps, 1), 'max_c', nan(n_eps, 1));
+
+fprintf('\n=== Epsilon sweep (averaged data, lower bound + data fidelity) ===\n');
+fprintf('epsilon grid: %s\n', mat2str(epsilon_grid));
+
+for ie = 1:n_eps
+    eps_i = epsilon_grid(ie);
+    fprintf('M1 epsilon = %.0f ...\n', eps_i);
+    [~, ~, ~, sweep_M1.nlml(ie), sweep_M1.exitflag(ie), sweep_M1.max_c(ie), ~, sweep_M1.nFeas(ie)] = ...
+        fit_gp_lower_bound(newtime', datapointsM1', gpM1_avg.hyp, X_c, k_pens, [], ...
+        inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, ...
+        nTry, nMultistart, 44, eps_i, false);
+end
+for ie = 1:n_eps
+    eps_i = epsilon_grid(ie);
+    fprintf('M2 epsilon = %.0f ...\n', eps_i);
+    [~, ~, ~, sweep_M2.nlml(ie), sweep_M2.exitflag(ie), sweep_M2.max_c(ie), ~, sweep_M2.nFeas(ie)] = ...
+        fit_gp_lower_bound(newtime', datapointsM2', gpM2_avg.hyp, X_c, k_pens, [], ...
+        inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, ...
+        nTry, nMultistart, 45, eps_i, false);
+end
+
+plot_epsilon_sweep_metrics(104, 'M1', epsilon_grid, sweep_M1, nTry);
+plot_epsilon_sweep_metrics(105, 'M2', epsilon_grid, sweep_M2, nTry);
+%}
+
+
+%% Bounded GP on averaged data
+% Pensoneault lower bound at 0 + data fidelity on averaged data; reuses X_c, k_pens, opts_pens.
+
+epsilon = 145;
+fprintf('\n=== Pensoneault GP on averaged data (lower bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
+
+[gpM1_avg_bound.hyp, gpM1_avg_bound.mu, gpM1_avg_bound.s2, gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c, c_final_M1] = ...
     fit_gp_lower_bound(newtime', datapointsM1', gpM1_avg.hyp, X_c, k_pens, tgrid, ...
-    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, nTry, nMultistart, 44);
-[gpM2_avg_bound.hyp, gpM2_avg_bound.mu, gpM2_avg_bound.s2, gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c] = ...
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, nTry, nMultistart, 44, epsilon);
+[gpM2_avg_bound.hyp, gpM2_avg_bound.mu, gpM2_avg_bound.s2, gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c, c_final_M2] = ...
     fit_gp_lower_bound(newtime', datapointsM2', gpM2_avg.hyp, X_c, k_pens, tgrid, ...
-    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, nTry, nMultistart, 45);
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, nTry, nMultistart, 45, epsilon);
 
+nC = numel(X_c);
 fprintf('M1 avg bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(gpM1_avg_bound.hyp.cov(1)), exp(gpM1_avg_bound.hyp.cov(2)), exp(gpM1_avg_bound.hyp.lik), ...
     gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c);
+fprintf('  lower max(c) = %.6g | data max(c) = %.6g\n', max(c_final_M1(1:nC)), max(c_final_M1(nC+1:end)));
 fprintf('M2 avg bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(gpM2_avg_bound.hyp.cov(1)), exp(gpM2_avg_bound.hyp.cov(2)), exp(gpM2_avg_bound.hyp.lik), ...
     gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c);
+fprintf('  lower max(c) = %.6g | data max(c) = %.6g\n', max(c_final_M2(1:nC)), max(c_final_M2(nC+1:end)));
 
 sdM1_avg_bound = sqrt(max(gpM1_avg_bound.s2, 0));
 sdM2_avg_bound = sqrt(max(gpM2_avg_bound.s2, 0));
@@ -333,9 +387,10 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 Pensoneault lower-bound GP (averaged data)')
+title(sprintf('M1 Pensoneault GP (averaged, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 % M2 subplot (right)
@@ -351,9 +406,10 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 Pensoneault lower-bound GP (averaged data)')
+title(sprintf('M2 Pensoneault GP (averaged, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
+xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
@@ -479,21 +535,37 @@ hyp = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x, y);
 [mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
 end
 
-function [hyp, mu, s2, nlml, exitflag, max_c] = fit_gp_lower_bound( ...
+function [hyp, mu, s2, nlml, exitflag, max_c, c_final, nFeas] = fit_gp_lower_bound( ...
     x, y, hyp_unc, X_c, k, xs, inffunc, meanfunc, covfunc, likfunc, ...
-    hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed)
+    hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed, epsilon, verbose)
 % Pensoneault lower-bound GP: minimize NLML subject to mu_f - k*sigma_f >= 0 at X_c.
-x = x(:); y = y(:); xs = xs(:);
+% Optional epsilon adds data-fidelity tube |y - y*(x)| <= epsilon at training points.
+if nargin < 17
+    epsilon = [];
+end
+if nargin < 18
+    verbose = true;
+end
+x = x(:); y = y(:);
+if isempty(xs)
+    xs = x;
+    skip_predict = true;
+else
+    xs = xs(:);
+    skip_predict = false;
+end
 sn_fixed = hyp_unc.lik;
 hyp_tpl = struct('mean', [], 'cov', hyp_unc.cov(:), 'lik', sn_fixed);
 theta_unc = hyp_unc.cov(:);
 
 objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x, y);
 nonlcon = @(theta) pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k);
+    x, y, X_c, k, epsilon);
 
 theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
-fprintf('Multistart: %d random starts\n', nTry);
+if verbose
+    fprintf('Multistart: %d random starts\n', nTry);
+end
 feasible_starts = zeros(2, 0);
 best_feas_nlml = inf;
 best_feas_theta = nan(2, 1);
@@ -511,13 +583,17 @@ for t = 1:nTry
     end
 end
 nFeas = size(feasible_starts, 2);
-fprintf('Feasible random starts: %d / %d\n', nFeas, nTry);
+if verbose
+    fprintf('Feasible random starts: %d / %d\n', nFeas, nTry);
+end
 if nFeas > 0
     nlml_feas = arrayfun(@(j) objfun(feasible_starts(:, j)), 1:nFeas);
     [~, ord] = sort(nlml_feas, 'ascend');
     starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
 else
-    fprintf('No feasible random start; using projected baseline theta.\n');
+    if verbose
+        fprintf('No feasible random start; using projected baseline theta.\n');
+    end
     starts_for_fmincon = theta_unc_box;
 end
 starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
@@ -546,15 +622,22 @@ if ~isfinite(best_nlml)
     end
     nlml = objfun(theta_opt);
     exitflag = -99;
-    fprintf('Warning: no successful fmincon run; using fallback theta.\n');
+    if verbose
+        fprintf('Warning: no successful fmincon run; using fallback theta.\n');
+    end
 end
 
 hyp = struct('mean', [], 'cov', theta_opt(:), 'lik', sn_fixed);
 [c_final, ~] = nonlcon(theta_opt);
 max_c = max(c_final);
-[~, ~, mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
-mu = mu(:);
-s2 = s2(:);
+if skip_predict
+    mu = [];
+    s2 = [];
+else
+    [~, ~, mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
+    mu = mu(:);
+    s2 = s2(:);
+end
 end
 
 function hyp = theta_to_hyp(theta, hyp_tpl)
@@ -564,12 +647,68 @@ hyp.mean = [];
 end
 
 function [c, ceq] = pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k)
+    x, y, X_c, k, epsilon)
 % Pensoneault lower bound at 0 on latent f: mu_f - k*sigma_f >= 0  <=>  c <= 0.
+% Optional epsilon adds |y - y*(x)| <= epsilon at training points (noisy predictive mean).
+if nargin < 11
+    epsilon = [];
+end
 hyp = theta_to_hyp(theta, hyp_tpl);
-[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
-m_xc = fmu(:);
-s_xc = sqrt(max(fs2(:), 0));
-c = k .* s_xc - m_xc;
+nC = numel(X_c);
+if isempty(epsilon)
+    [~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
+    m_xc = fmu(:);
+    s_xc = sqrt(max(fs2(:), 0));
+    c = k .* s_xc - m_xc;
+else
+    xstar = [X_c(:); x(:)];
+    [ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
+    m_xc = fmu(1:nC);
+    s_xc = sqrt(max(fs2(1:nC), 0));
+    c_lower = k .* s_xc - m_xc;
+    y_star = ymu(nC+1:end);
+    c_data = abs(y - y_star) - epsilon;
+    c = [c_lower(:); c_data(:)];
+end
 ceq = [];
+end
+
+function plot_epsilon_sweep_metrics(fig_num, state_label, epsilon_grid, metrics, nTry)
+figure(fig_num);
+tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+plot(epsilon_grid, metrics.nFeas, 'o-', 'LineWidth', 1.5, 'MarkerSize', 7);
+ylabel('Feasible random starts');
+title('Feasible random starts');
+grid on;
+set(gca, 'fontsize', 14);
+
+nexttile;
+plot(epsilon_grid, metrics.exitflag, 'o-', 'LineWidth', 1.5, 'MarkerSize', 7);
+ylabel('exitflag');
+title('fmincon exitflag');
+grid on;
+set(gca, 'fontsize', 14);
+
+nexttile;
+plot(epsilon_grid, metrics.nlml, 'o-', 'LineWidth', 1.5, 'MarkerSize', 7);
+xlabel('epsilon (data-fidelity tube width)');
+ylabel('NLML');
+title('NLML');
+grid on;
+set(gca, 'fontsize', 14);
+
+nexttile;
+plot(epsilon_grid, metrics.max_c, 'o-', 'LineWidth', 1.5, 'MarkerSize', 7);
+hold on;
+yline(0, 'k--', 'HandleVisibility', 'off');
+hold off;
+xlabel('epsilon (data-fidelity tube width)');
+ylabel('max(c)');
+title('max(c)');
+grid on;
+set(gca, 'fontsize', 14);
+
+sgtitle(sprintf('%s epsilon sweep (lower bound + data fidelity, nTry=%d)', state_label, nTry));
 end
