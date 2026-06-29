@@ -146,6 +146,99 @@ legend('Location', 'northwest')
 set(gca, 'fontsize', 20)
 
 
+%% Bounded GP (Pensoneault lower bound at 0)
+% Probabilistic lower bound mu_f(x) - k*sigma_f(x) >= 0 on 41 equispaced points.
+% SE kernel, zero mean; hyperparameters (ell, sf) optimized via fmincon with sigma_n
+% fixed from the unconstrained fits above.
+
+x_min = 0;
+x_max = 14;
+eta = 0.022;   % 2.2% tail probability (Pensoneault et al.)
+k_pens = -sqrt(2) * erfinv(2 * eta - 1);
+n_constraint = 41;
+X_c = linspace(x_min, x_max, n_constraint)';
+
+ell_bounds_lo = 0.05;
+ell_ub = x_max;
+sf_bounds_M1 = [0.05, max(15, 1.5 * std(dataM1))];
+sf_bounds_M2 = [0.05, max(15, 1.5 * std(dataM2))];
+hyp_lb_M1 = log([ell_bounds_lo; sf_bounds_M1(1)]);
+hyp_ub_M1 = log([ell_ub; sf_bounds_M1(2)]);
+hyp_lb_M2 = log([ell_bounds_lo; sf_bounds_M2(1)]);
+hyp_ub_M2 = log([ell_ub; sf_bounds_M2(2)]);
+
+opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
+    'EnableFeasibilityMode', true, 'Display', 'off', ...
+    'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
+    'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
+nTry = 2000;
+nMultistart = 10;
+
+fprintf('\n=== Pensoneault GP (lower bound at 0) ===\n');
+fprintf('eta = %.3g%% | k = %.4f | X_c: %d points on [%.0f, %.0f]\n', ...
+    100 * eta, k_pens, n_constraint, x_min, x_max);
+
+[gpM1_bound.hyp, gpM1_bound.mu, gpM1_bound.s2, gpM1_bound.nlml, gpM1_bound.exitflag, gpM1_bound.max_c] = ...
+    fit_gp_lower_bound(timeM1', dataM1', gpM1.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_M1, hyp_ub_M1, opts_pens, nTry, nMultistart, 42);
+[gpM2_bound.hyp, gpM2_bound.mu, gpM2_bound.s2, gpM2_bound.nlml, gpM2_bound.exitflag, gpM2_bound.max_c] = ...
+    fit_gp_lower_bound(timeM2', dataM2', gpM2.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc, hyp_lb_M2, hyp_ub_M2, opts_pens, nTry, nMultistart, 43);
+
+fprintf('M1 bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM1_bound.hyp.cov(1)), exp(gpM1_bound.hyp.cov(2)), exp(gpM1_bound.hyp.lik), ...
+    gpM1_bound.nlml, gpM1_bound.exitflag, gpM1_bound.max_c);
+fprintf('M2 bounded: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM2_bound.hyp.cov(1)), exp(gpM2_bound.hyp.cov(2)), exp(gpM2_bound.hyp.lik), ...
+    gpM2_bound.nlml, gpM2_bound.exitflag, gpM2_bound.max_c);
+
+% --- Plot bounded GP fits with 95% uncertainty bands ---
+sdM1_bound = sqrt(max(gpM1_bound.s2, 0));
+sdM2_bound = sqrt(max(gpM2_bound.s2, 0));
+k_plot = 1.96;
+ylim_bound = [0, max([dataM1(:); dataM2(:); ...
+    gpM1_bound.mu + k_plot * sdM1_bound; gpM2_bound.mu + k_plot * sdM2_bound]) * 1.05];
+
+figure(101)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+% M1 subplot (left)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_bound.mu + k_plot*sdM1_bound; flipud(gpM1_bound.mu - k_plot*sdM1_bound)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_bound.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 bounded GP mean')
+sM1_b = scatter(timeM1, dataM1, 'k', 'filled', 'DisplayName', 'M1 data');
+sM1_b.Marker = 'hexagram';
+sM1_b.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 Pensoneault lower-bound GP')
+legend('Location', 'northwest')
+ylim(ylim_bound)
+set(gca, 'fontsize', 20)
+
+% M2 subplot (right)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_bound.mu + k_plot*sdM2_bound; flipud(gpM2_bound.mu - k_plot*sdM2_bound)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_bound.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 bounded GP mean')
+sM2_b = scatter(timeM2, dataM2, 'r', 'filled', 'DisplayName', 'M2 data');
+sM2_b.Marker = 'hexagram';
+sM2_b.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 Pensoneault lower-bound GP')
+legend('Location', 'northwest')
+ylim(ylim_bound)
+set(gca, 'fontsize', 20)
+
+
 %% Obtain Derivative Information 
 %  next stepp will be to wire the GP-derived derivatives into the SINDy step (replacing the polynomial derivatives)
 % t = [0:0.1:14]; %time that we want to fit the polynomial over
@@ -266,4 +359,99 @@ hyp = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x, y);
 
 % Predictive mean and variance on the query points
 [mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
+end
+
+function [hyp, mu, s2, nlml, exitflag, max_c] = fit_gp_lower_bound( ...
+    x, y, hyp_unc, X_c, k, xs, inffunc, meanfunc, covfunc, likfunc, ...
+    hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed)
+% Pensoneault lower-bound GP: minimize NLML subject to mu_f - k*sigma_f >= 0 at X_c.
+x = x(:); y = y(:); xs = xs(:);
+sn_fixed = hyp_unc.lik;
+hyp_tpl = struct('mean', [], 'cov', hyp_unc.cov(:), 'lik', sn_fixed);
+theta_unc = hyp_unc.cov(:);
+
+objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x, y);
+nonlcon = @(theta) pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k);
+
+theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
+fprintf('Multistart: %d random starts\n', nTry);
+feasible_starts = zeros(2, 0);
+best_feas_nlml = inf;
+best_feas_theta = nan(2, 1);
+rng(rng_seed);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(2, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = nonlcon(theta_try);
+    if max(c_try) <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = objfun(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+        end
+    end
+end
+nFeas = size(feasible_starts, 2);
+fprintf('Feasible random starts: %d / %d\n', nFeas, nTry);
+if nFeas > 0
+    nlml_feas = arrayfun(@(j) objfun(feasible_starts(:, j)), 1:nFeas);
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+else
+    fprintf('No feasible random start; using projected baseline theta.\n');
+    starts_for_fmincon = theta_unc_box;
+end
+starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
+starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
+
+best_nlml = inf;
+theta_opt = nan(2, 1);
+nlml = nan;
+exitflag = -99;
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    [theta_j, nlml_j, ef_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml = nlml_j;
+        exitflag = ef_j;
+    end
+end
+if ~isfinite(best_nlml)
+    if nFeas > 0
+        theta_opt = best_feas_theta;
+    else
+        theta_opt = theta_unc_box;
+    end
+    nlml = objfun(theta_opt);
+    exitflag = -99;
+    fprintf('Warning: no successful fmincon run; using fallback theta.\n');
+end
+
+hyp = struct('mean', [], 'cov', theta_opt(:), 'lik', sn_fixed);
+[c_final, ~] = nonlcon(theta_opt);
+max_c = max(c_final);
+[~, ~, mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
+mu = mu(:);
+s2 = s2(:);
+end
+
+function hyp = theta_to_hyp(theta, hyp_tpl)
+hyp = hyp_tpl;
+hyp.cov = theta(1:2);
+hyp.mean = [];
+end
+
+function [c, ceq] = pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k)
+% Pensoneault lower bound at 0 on latent f: mu_f - k*sigma_f >= 0  <=>  c <= 0.
+hyp = theta_to_hyp(theta, hyp_tpl);
+[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
+m_xc = fmu(:);
+s_xc = sqrt(max(fs2(:), 0));
+c = k .* s_xc - m_xc;
+ceq = [];
 end
