@@ -5,7 +5,8 @@ clear; close all; clc
 %averages 
 newtime = [0, 1, 2, 3,5, 7, 14]; %These are the points where we observe experimental data
 datapointsM1 = [5, 27.5, 122.5, 139.8, 325, 445, 816.67]; %Experimental measurements of M1 (averaged per time point)
-datapointsM2 = [5, 78.33, 179.5, 126.4, 800, 319, 136.67]; %Experimental measurements of M2 (averaged per time point)
+newtimeM2 = [0, 1, 2, 3, 7, 14]; % M2 averaged times (day 5 excluded)
+datapointsM2 = [5, 78.33, 179.5, 126.4, 319, 136.67]; % M2 averaged (day 5 excluded)
 
 % full data
 % Individual measurements compiled from the experimental studies (Fig. 1 / Table 1).
@@ -28,7 +29,7 @@ dataM1 = [0, 5, 375, 325, 600, 750, ...
           10, 50, 100, 900, 1300, ...
           60, 225];
 
-timeM2 = [0, 1, 3, 5, 7, 14, ...   % Hu2012
+timeM2 = [0, 1, 3, 7, 14, ...   % Hu2012 (day 5 excluded)
           1, 3, 7, ...             % Li2018
           2, ...                   % Ma2020
           14, ...                  % Wang2017
@@ -36,7 +37,7 @@ timeM2 = [0, 1, 3, 5, 7, 14, ...   % Hu2012
           2, ...                   % Li2023
           0, 1, 3, 7, 14, ...      % Suenega2015
           3, 7];                   % Yang2017
-dataM2 = [0, 170, 300, 800, 600, 200, ...
+dataM2 = [0, 170, 300, 600, 200, ...
           15, 15, 6, ...
           90, ...
           110, ...
@@ -54,7 +55,7 @@ study_idsM1 = [1, 1, 1, 1, 1, 1, ...   % Hu2012
                6, ...                  % Li2023
                7, 7, 7, 7, 7, ...     % Suenega2015
                8, 8];                  % Yang2017
-study_idsM2 = [1, 1, 1, 1, 1, 1, ...   % Hu2012
+study_idsM2 = [1, 1, 1, 1, 1, ...   % Hu2012
                2, 2, 2, ...            % Li2018
                3, ...                  % Ma2020
                4, ...                  % Wang2017
@@ -62,8 +63,6 @@ study_idsM2 = [1, 1, 1, 1, 1, 1, ...   % Hu2012
                6, ...                  % Li2023
                7, 7, 7, 7, 7, ...     % Suenega2015
                8, 8];                  % Yang2017
-t_day = 5;
-sigma_day5_M2 = 360;  % fixed observation noise at day 5 (M2 hetero only)
 
 
 %% GP
@@ -83,7 +82,6 @@ try
     startup;
 catch
 end
-addpath(fileparts(fileparts(mfilename('fullpath'))));  % problems/ (gp_seiso_hetero_noise)
 
 meanfunc = @meanZero;       % zero mean
 covfunc  = @covSEiso;       % squared exponential kernel
@@ -271,11 +269,11 @@ set(gca, 'fontsize', 20)
 
 
 %% GP on averaged data
-% Unconstrained SE-kernel GP fits on per-timepoint averages (newtime, datapointsM1/M2).
+% Unconstrained SE-kernel GP: M1 on newtime; M2 on newtimeM2 (day 5 excluded for M2).
 
 [gpM1_avg.hyp, gpM1_avg.mu, gpM1_avg.s2] = fit_gp(newtime', datapointsM1', tgrid, ...
     inffunc, meanfunc, covfunc, likfunc);
-[gpM2_avg.hyp, gpM2_avg.mu, gpM2_avg.s2] = fit_gp(newtime', datapointsM2', tgrid, ...
+[gpM2_avg.hyp, gpM2_avg.mu, gpM2_avg.s2] = fit_gp(newtimeM2', datapointsM2', tgrid, ...
     inffunc, meanfunc, covfunc, likfunc);
 
 sdM1_avg = sqrt(max(gpM1_avg.s2, 0));
@@ -298,7 +296,7 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M1 GP fit (averaged data, SE)')
 legend('Location', 'northwest')
-ylim([-700, 1000])
+ylim([-100, 1000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
@@ -308,7 +306,7 @@ hold on
 fill([tgrid; flipud(tgrid)], [gpM2_avg.mu + k*sdM2_avg; flipud(gpM2_avg.mu - k*sdM2_avg)], ...
     'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
 plot(tgrid, gpM2_avg.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 GP mean')
-sM2_avg = scatter(newtime, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
 sM2_avg.Marker = 'hexagram';
 sM2_avg.SizeData = 150;
 hold off
@@ -316,113 +314,193 @@ xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
 title('M2 GP fit (averaged data, SE)')
 legend('Location', 'northwest')
-ylim([-700, 1000])
+ylim([-100, 1000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
-%% Heteroscedastic GP (M2 day 5 downweighted)
-% M1: homoscedastic (same as figure 100 / 102).
-% M2: fixed sigma_day5_M2 at t=5; sigma_base = exp(hyp.lik) from homoscedastic fit.
+%% Log1p GP on full data
+% GP on z = log1p(y) for positivity; (0,0) points map to log1p(0)=0.
+% Bands back-transformed to cells/mm^2 for plotting (approximate on original scale).
 
-fprintf('\n=== M2 day-5 heteroscedastic noise (full data) ===\n');
-sigma_base_M2_full = exp(gpM2.hyp.lik);
-fprintf('M2 full: sigma_base=%.4g | sigma_day5=%.4g | kappa=%.3g\n', ...
-    sigma_base_M2_full, sigma_day5_M2, sigma_day5_M2 / sigma_base_M2_full);
+[gpM1_log.hyp, gpM1_log.mu, gpM1_log.s2, gpM1_log.mu_orig, gpM1_log.lo, gpM1_log.hi] = ...
+    fit_gp_log1p(timeM1', dataM1', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+[gpM2_log.hyp, gpM2_log.mu, gpM2_log.s2, gpM2_log.mu_orig, gpM2_log.lo, gpM2_log.hi] = ...
+    fit_gp_log1p(timeM2', dataM2', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
 
-noise_var_M2_full = build_day5_noise_var(timeM2', sigma_base_M2_full, sigma_day5_M2, t_day);
-[gpM2_hetero.hyp, gpM2_hetero.mu, gpM2_hetero.s2] = fit_gp_hetero( ...
-    timeM2', dataM2', tgrid, noise_var_M2_full, gpM2.hyp);
-
-sdM2_hetero = sqrt(max(gpM2_hetero.s2, 0));
-
-figure(106)
+figure(108)
 tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
 hold on
-fill([tgrid; flipud(tgrid)], [gpM1.mu + k*sdM1; flipud(gpM1.mu - k*sdM1)], ...
+fill([tgrid; flipud(tgrid)], [gpM1_log.hi; flipud(gpM1_log.lo)], ...
     'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
-plot(tgrid, gpM1.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 GP mean')
-sM1_h = scatter(timeM1, dataM1, 'k', 'filled', 'DisplayName', 'M1 data');
-sM1_h.Marker = 'hexagram';
-sM1_h.SizeData = 150;
+plot(tgrid, gpM1_log.mu_orig, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 log1p GP mean')
+sM1_log = scatter(timeM1, dataM1, 'k', 'filled', 'DisplayName', 'M1 data');
+sM1_log.Marker = 'hexagram';
+sM1_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 GP (full, SE, homoscedastic)')
+title('M1 log1p GP (full data, SE)')
 legend('Location', 'northwest')
-ylim([-500, 1400])
+ylim([-100, 4000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 nexttile;
 hold on
-fill([tgrid; flipud(tgrid)], [gpM2_hetero.mu + k*sdM2_hetero; flipud(gpM2_hetero.mu - k*sdM2_hetero)], ...
+fill([tgrid; flipud(tgrid)], [gpM2_log.hi; flipud(gpM2_log.lo)], ...
     'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
-plot(tgrid, gpM2_hetero.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 hetero GP mean')
-sM2_h = scatter(timeM2, dataM2, 'r', 'filled', 'DisplayName', 'M2 data');
-sM2_h.Marker = 'hexagram';
-sM2_h.SizeData = 150;
+plot(tgrid, gpM2_log.mu_orig, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 log1p GP mean')
+sM2_log = scatter(timeM2, dataM2, 'r', 'filled', 'DisplayName', 'M2 data');
+sM2_log.Marker = 'hexagram';
+sM2_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M2 hetero GP (full, SE, day 5 \\sigma=%.0f)', sigma_day5_M2))
+title('M2 log1p GP (full data, SE)')
 legend('Location', 'northwest')
-ylim([-500, 1400])
+ylim([-100, 4000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
-fprintf('\n=== M2 day-5 heteroscedastic noise (averaged data) ===\n');
-sigma_base_M2_avg = exp(gpM2_avg.hyp.lik);
-fprintf('M2 avg: sigma_base=%.4g | sigma_day5=%.4g | kappa=%.3g\n', ...
-    sigma_base_M2_avg, sigma_day5_M2, sigma_day5_M2 / sigma_base_M2_avg);
 
-noise_var_M2_avg = build_day5_noise_var(newtime', sigma_base_M2_avg, sigma_day5_M2, t_day);
-[gpM2_avg_hetero.hyp, gpM2_avg_hetero.mu, gpM2_avg_hetero.s2] = fit_gp_hetero( ...
-    newtime', datapointsM2', tgrid, noise_var_M2_avg, gpM2_avg.hyp);
+%% Log1p GP on averaged data
 
-sdM2_avg_hetero = sqrt(max(gpM2_avg_hetero.s2, 0));
+[gpM1_avg_log.hyp, gpM1_avg_log.mu, gpM1_avg_log.s2, gpM1_avg_log.mu_orig, gpM1_avg_log.lo, gpM1_avg_log.hi] = ...
+    fit_gp_log1p(newtime', datapointsM1', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+[gpM2_avg_log.hyp, gpM2_avg_log.mu, gpM2_avg_log.s2, gpM2_avg_log.mu_orig, gpM2_avg_log.lo, gpM2_avg_log.hi] = ...
+    fit_gp_log1p(newtimeM2', datapointsM2', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
 
-figure(107)
+figure(109)
 tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
 hold on
-fill([tgrid; flipud(tgrid)], [gpM1_avg.mu + k*sdM1_avg; flipud(gpM1_avg.mu - k*sdM1_avg)], ...
+fill([tgrid; flipud(tgrid)], [gpM1_avg_log.hi; flipud(gpM1_avg_log.lo)], ...
     'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
-plot(tgrid, gpM1_avg.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 GP mean')
-sM1_avg_h = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
-sM1_avg_h.Marker = 'hexagram';
-sM1_avg_h.SizeData = 150;
+plot(tgrid, gpM1_avg_log.mu_orig, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 log1p GP mean')
+sM1_avg_log = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg_log.Marker = 'hexagram';
+sM1_avg_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 GP (averaged, SE, homoscedastic)')
+title('M1 log1p GP (averaged data, SE)')
 legend('Location', 'northwest')
-ylim([-700, 1000])
+ylim([-100, 4000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 nexttile;
 hold on
-fill([tgrid; flipud(tgrid)], [gpM2_avg_hetero.mu + k*sdM2_avg_hetero; flipud(gpM2_avg_hetero.mu - k*sdM2_avg_hetero)], ...
+fill([tgrid; flipud(tgrid)], [gpM2_avg_log.hi; flipud(gpM2_avg_log.lo)], ...
     'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
-plot(tgrid, gpM2_avg_hetero.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 hetero GP mean')
-sM2_avg_h = scatter(newtime, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
-sM2_avg_h.Marker = 'hexagram';
-sM2_avg_h.SizeData = 150;
+plot(tgrid, gpM2_avg_log.mu_orig, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 log1p GP mean')
+sM2_avg_log = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg_log.Marker = 'hexagram';
+sM2_avg_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M2 hetero GP (averaged, SE, day 5 \\sigma=%.0f)', sigma_day5_M2))
+title('M2 log1p GP (averaged data, SE)')
 legend('Location', 'northwest')
-ylim([-700, 1000])
+ylim([-100, 4000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
 
-% Sensitivity (optional): refit with sigma_day5 = kappa_sweep * sigma_base
-% kappa_sweep = [1, 2, 3];
+
+%% Sqrt GP on full data
+% GP on z = sqrt(y) for positivity; sqrt(0)=0 handles (0,0) training points.
+% Bands back-transformed to cells/mm^2 for plotting (approximate on original scale).
+
+[gpM1_sqrt.hyp, gpM1_sqrt.mu, gpM1_sqrt.s2, gpM1_sqrt.mu_orig, gpM1_sqrt.lo, gpM1_sqrt.hi] = ...
+    fit_gp_sqrt(timeM1', dataM1', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+[gpM2_sqrt.hyp, gpM2_sqrt.mu, gpM2_sqrt.s2, gpM2_sqrt.mu_orig, gpM2_sqrt.lo, gpM2_sqrt.hi] = ...
+    fit_gp_sqrt(timeM2', dataM2', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+
+figure(110)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_sqrt.hi; flipud(gpM1_sqrt.lo)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_sqrt.mu_orig, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 sqrt GP mean')
+sM1_sqrt = scatter(timeM1, dataM1, 'k', 'filled', 'DisplayName', 'M1 data');
+sM1_sqrt.Marker = 'hexagram';
+sM1_sqrt.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 sqrt GP (full data, SE)')
+legend('Location', 'northwest')
+ylim([0, 1400])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_sqrt.hi; flipud(gpM2_sqrt.lo)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_sqrt.mu_orig, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 sqrt GP mean')
+sM2_sqrt = scatter(timeM2, dataM2, 'r', 'filled', 'DisplayName', 'M2 data');
+sM2_sqrt.Marker = 'hexagram';
+sM2_sqrt.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 sqrt GP (full data, SE)')
+legend('Location', 'northwest')
+ylim([0, 1400])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+
+%% Sqrt GP on averaged data
+
+[gpM1_avg_sqrt.hyp, gpM1_avg_sqrt.mu, gpM1_avg_sqrt.s2, gpM1_avg_sqrt.mu_orig, gpM1_avg_sqrt.lo, gpM1_avg_sqrt.hi] = ...
+    fit_gp_sqrt(newtime', datapointsM1', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+[gpM2_avg_sqrt.hyp, gpM2_avg_sqrt.mu, gpM2_avg_sqrt.s2, gpM2_avg_sqrt.mu_orig, gpM2_avg_sqrt.lo, gpM2_avg_sqrt.hi] = ...
+    fit_gp_sqrt(newtimeM2', datapointsM2', tgrid, k, inffunc, meanfunc, covfunc, likfunc);
+
+figure(111)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_avg_sqrt.hi; flipud(gpM1_avg_sqrt.lo)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_avg_sqrt.mu_orig, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 sqrt GP mean')
+sM1_avg_sqrt = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg_sqrt.Marker = 'hexagram';
+sM1_avg_sqrt.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 sqrt GP (averaged data, SE)')
+legend('Location', 'northwest')
+ylim([0, 1000])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_avg_sqrt.hi; flipud(gpM2_avg_sqrt.lo)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_avg_sqrt.mu_orig, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 sqrt GP mean')
+sM2_avg_sqrt = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg_sqrt.Marker = 'hexagram';
+sM2_avg_sqrt.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 sqrt GP (averaged data, SE)')
+legend('Location', 'northwest')
+ylim([0, 1000])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
 
 
 % Hyperparameter bounds for averaged-data bounded GPs (shared by sweep and figure 103) — disabled
@@ -666,74 +744,34 @@ hyp = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x, y);
 [mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
 end
 
-% calibrate_day5_noise / interstudy_spread retained below for optional data-driven calibration.
-
-function noise_var = build_day5_noise_var(x, sigma_base, sigma_day5, t_day)
-% Fixed heteroscedastic noise: sigma_base everywhere, sigma_day5 at t_day.
-x = x(:);
-sigma = sigma_base * ones(numel(x), 1);
-sigma(x == t_day) = sigma_day5;
-noise_var = sigma.^2;
+function [hyp, mu_log, s2_log, mu_orig, lo_orig, hi_orig] = fit_gp_log1p( ...
+    x, y, xs, k_band, inffunc, meanfunc, covfunc, likfunc)
+% Homoscedastic SE GP on z = log1p(y); back-transform mean/bands to original scale.
+% log1p(0)=0 handles (0,0) training points. Bands on original scale are approximate.
+x = x(:); y = y(:); xs = xs(:);
+y_log = log1p(y);
+[hyp, mu_log, s2_log] = fit_gp(x, y_log, xs, inffunc, meanfunc, covfunc, likfunc);
+mu_log = mu_log(:);
+s2_log = s2_log(:);
+sd_log = sqrt(max(s2_log, 0));
+mu_orig = expm1(mu_log);
+lo_orig = max(0, expm1(mu_log - k_band * sd_log));
+hi_orig = expm1(mu_log + k_band * sd_log);
 end
 
-function [sigma_base, sigma_interstudy, sigma_day5] = calibrate_day5_noise( ...
-    x, y, study_ids, t_day, xs, inffunc, meanfunc, covfunc, likfunc)
-% sigma_base: homoscedastic NLML noise fit excluding day 5.
-% sigma_interstudy: median across-study std at times t ~= day 5 (full data).
-% sigma_day5 = max(sigma_base, sigma_interstudy).
-x = x(:); y = y(:); study_ids = study_ids(:);
-exclude = x ~= t_day;
-[hyp, ~, ~] = fit_gp(x(exclude), y(exclude), xs, inffunc, meanfunc, covfunc, likfunc);
-sigma_base = exp(hyp.lik);
-sigma_interstudy = interstudy_spread(x, y, study_ids, t_day);
-sigma_day5 = max(sigma_base, sigma_interstudy);
-end
-
-function sigma_interstudy = interstudy_spread(x, y, study_ids, t_day)
-x = x(:); y = y(:); study_ids = study_ids(:);
-unique_times = unique(x);
-spreads = [];
-for ii = 1:numel(unique_times)
-    t = unique_times(ii);
-    if t == t_day
-        continue;
-    end
-    idx = (x == t);
-    sid_at_t = study_ids(idx);
-    y_at_t = y(idx);
-    unique_sids = unique(sid_at_t);
-    if numel(unique_sids) < 2
-        continue;
-    end
-    study_vals = zeros(numel(unique_sids), 1);
-    for k = 1:numel(unique_sids)
-        j = sid_at_t == unique_sids(k);
-        study_vals(k) = mean(y_at_t(j));
-    end
-    spreads(end + 1) = std(study_vals); %#ok<AGROW>
-end
-if isempty(spreads)
-    sigma_interstudy = 0;
-else
-    sigma_interstudy = median(spreads);
-end
-end
-
-function [hyp, mu, s2] = fit_gp_hetero(x, y, xs, noise_var, hyp0)
-% SE GP with fixed per-row noise via gp_seiso_hetero_noise (exact inference).
-x = x(:); y = y(:); xs = xs(:); noise_var = noise_var(:);
-if nargin < 5 || isempty(hyp0)
-    ell0 = std(x);
-    sf0 = std(y);
-    hyp0 = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', []);
-else
-    hyp0 = struct('mean', [], 'cov', hyp0.cov(:), 'lik', []);
-end
-obj = @(h) gp_seiso_hetero_noise('nlml', h, x, y, noise_var);
-hyp = minimize(hyp0, obj, -100);
-[~, ~, mu, s2] = gp_seiso_hetero_noise('pred', hyp, x, y, noise_var, xs);
-mu = mu(:);
-s2 = s2(:);
+function [hyp, mu_sqrt, s2_sqrt, mu_orig, lo_orig, hi_orig] = fit_gp_sqrt( ...
+    x, y, xs, k_band, inffunc, meanfunc, covfunc, likfunc)
+% Homoscedastic SE GP on z = sqrt(y); back-transform mean/bands to original scale.
+% sqrt(0)=0 handles (0,0) training points. Bands on original scale are approximate.
+x = x(:); y = y(:); xs = xs(:);
+y_sqrt = sqrt(max(y, 0));
+[hyp, mu_sqrt, s2_sqrt] = fit_gp(x, y_sqrt, xs, inffunc, meanfunc, covfunc, likfunc);
+mu_sqrt = mu_sqrt(:);
+s2_sqrt = s2_sqrt(:);
+sd_sqrt = sqrt(max(s2_sqrt, 0));
+mu_orig = mu_sqrt.^2;
+lo_orig = max(0, mu_sqrt - k_band * sd_sqrt).^2;
+hi_orig = (mu_sqrt + k_band * sd_sqrt).^2;
 end
 
 % --- Pensoneault lower-bound helpers (disabled) ---
