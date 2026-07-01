@@ -85,7 +85,7 @@ end
 
 meanfunc = @meanZero;       % zero mean
 covfunc  = @covSEiso;       % squared exponential kernel
-% covfunc_bound = {@covMaterniso, 2.5};  % Matern 5/2 kernel (constrained GPs)
+covfunc_bound = @covSEiso;   % squared exponential kernel (constrained GPs)
 likfunc  = @likGauss;       % Gaussian likelihood
 inffunc  = @infGaussLik;    % exact inference
 
@@ -171,10 +171,60 @@ xlim([0, 14])
 set(gca, 'fontsize', 20)
 
 
-%% Bounded GP (Pensoneault lower bound at 0) — disabled
-%{
+%% GP on averaged data
+% Unconstrained SE-kernel GP: M1 on newtime; M2 on newtimeM2 (day 5 excluded for M2).
+
+[gpM1_avg.hyp, gpM1_avg.mu, gpM1_avg.s2] = fit_gp(newtime', datapointsM1', tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc);
+[gpM2_avg.hyp, gpM2_avg.mu, gpM2_avg.s2] = fit_gp(newtimeM2', datapointsM2', tgrid, ...
+    inffunc, meanfunc, covfunc, likfunc);
+
+sdM1_avg = sqrt(max(gpM1_avg.s2, 0));
+sdM2_avg = sqrt(max(gpM2_avg.s2, 0));
+
+figure(102)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+% M1 subplot (left)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_avg.mu + k*sdM1_avg; flipud(gpM1_avg.mu - k*sdM1_avg)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_avg.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 GP mean')
+sM1_avg = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg.Marker = 'hexagram';
+sM1_avg.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 GP fit (averaged data, SE)')
+legend('Location', 'northwest')
+ylim([-100, 1000])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+% M2 subplot (right)
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_avg.mu + k*sdM2_avg; flipud(gpM2_avg.mu - k*sdM2_avg)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_avg.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 GP mean')
+sM2_avg = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg.Marker = 'hexagram';
+sM2_avg.SizeData = 150;
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 GP fit (averaged data, SE)')
+legend('Location', 'northwest')
+ylim([-100, 1000])
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+
+%% Bounded GP (Pensoneault lower bound at 0)
 % Probabilistic lower bound mu_f(x) - k*sigma_f(x) >= 0 on 41 equispaced points.
-% Matern 5/2 kernel, zero mean; hyperparameters (ell, sf) optimized via fmincon with sigma_n
+% SE kernel, zero mean; hyperparameters (ell, sf) optimized via fmincon with sigma_n
 % fixed from the unconstrained SE fits above.
 
 x_min = 0;
@@ -241,7 +291,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 Pensoneault lower-bound GP (Matern 5/2)')
+title('M1 Pensoneault lower-bound GP (SE)')
 legend('Location', 'northwest')
 ylim(ylim_bound)
 xlim([0, 14])
@@ -260,65 +310,15 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 Pensoneault lower-bound GP (Matern 5/2)')
+title('M2 Pensoneault lower-bound GP (SE)')
 legend('Location', 'northwest')
 ylim(ylim_bound)
 xlim([0, 14])
 set(gca, 'fontsize', 20)
-%}
 
 
-%% GP on averaged data
-% Unconstrained SE-kernel GP: M1 on newtime; M2 on newtimeM2 (day 5 excluded for M2).
-
-[gpM1_avg.hyp, gpM1_avg.mu, gpM1_avg.s2] = fit_gp(newtime', datapointsM1', tgrid, ...
-    inffunc, meanfunc, covfunc, likfunc);
-[gpM2_avg.hyp, gpM2_avg.mu, gpM2_avg.s2] = fit_gp(newtimeM2', datapointsM2', tgrid, ...
-    inffunc, meanfunc, covfunc, likfunc);
-
-sdM1_avg = sqrt(max(gpM1_avg.s2, 0));
-sdM2_avg = sqrt(max(gpM2_avg.s2, 0));
-
-figure(102)
-tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
-
-% M1 subplot (left)
-nexttile;
-hold on
-fill([tgrid; flipud(tgrid)], [gpM1_avg.mu + k*sdM1_avg; flipud(gpM1_avg.mu - k*sdM1_avg)], ...
-    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
-plot(tgrid, gpM1_avg.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 GP mean')
-sM1_avg = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
-sM1_avg.Marker = 'hexagram';
-sM1_avg.SizeData = 150;
-hold off
-xlabel('Time (Days)', 'fontsize', 20)
-ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 GP fit (averaged data, SE)')
-legend('Location', 'northwest')
-ylim([-100, 1000])
-xlim([0, 14])
-set(gca, 'fontsize', 20)
-
-% M2 subplot (right)
-nexttile;
-hold on
-fill([tgrid; flipud(tgrid)], [gpM2_avg.mu + k*sdM2_avg; flipud(gpM2_avg.mu - k*sdM2_avg)], ...
-    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
-plot(tgrid, gpM2_avg.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 GP mean')
-sM2_avg = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
-sM2_avg.Marker = 'hexagram';
-sM2_avg.SizeData = 150;
-hold off
-xlabel('Time (Days)', 'fontsize', 20)
-ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 GP fit (averaged data, SE)')
-legend('Location', 'northwest')
-ylim([-100, 1000])
-xlim([0, 14])
-set(gca, 'fontsize', 20)
-
-
+%% Log1p / sqrt GP transforms — disabled
+%{
 %% Log1p GP on full data
 % GP on z = log1p(y) for positivity; (0,0) points map to log1p(0)=0.
 % Bands back-transformed to cells/mm^2 for plotting (approximate on original scale).
@@ -501,17 +501,16 @@ legend('Location', 'northwest')
 ylim([0, 1000])
 xlim([0, 14])
 set(gca, 'fontsize', 20)
+%}
 
 
-% Hyperparameter bounds for averaged-data bounded GPs (shared by sweep and figure 103) — disabled
-%{
+% Hyperparameter bounds for averaged-data bounded GPs (shared by sweep and figure 103)
 sf_bounds_avg_M1 = [0.05, max(15, 1.5 * std(datapointsM1))];
 sf_bounds_avg_M2 = [0.05, max(15, 1.5 * std(datapointsM2))];
 hyp_lb_avg_M1 = log([ell_bounds_lo; sf_bounds_avg_M1(1)]);
 hyp_ub_avg_M1 = log([ell_ub; sf_bounds_avg_M1(2)]);
 hyp_lb_avg_M2 = log([ell_bounds_lo; sf_bounds_avg_M2(1)]);
 hyp_ub_avg_M2 = log([ell_ub; sf_bounds_avg_M2(2)]);
-%}
 
 
 %% Epsilon sweep (averaged data, lower bound + data fidelity)
@@ -551,17 +550,79 @@ hyp_ub_avg_M2 = log([ell_ub; sf_bounds_avg_M2(2)]);
 % 
 
 
-%% Bounded GP on averaged data — disabled
-% Pensoneault lower bound at 0 + data fidelity on averaged data (Matern 5/2 kernel).
-%{
-epsilon = 115;
+%% Bounded GP on averaged data (lower bound only)
+% Pensoneault lower bound at 0 on averaged data (SE kernel); no data-fidelity tube.
+
+fprintf('\n=== Pensoneault GP on averaged data (lower bound at 0) ===\n');
+
+[gpM1_avg_pens.hyp, gpM1_avg_pens.mu, gpM1_avg_pens.s2, gpM1_avg_pens.nlml, gpM1_avg_pens.exitflag, gpM1_avg_pens.max_c] = ...
+    fit_gp_lower_bound(newtime', datapointsM1', gpM1_avg.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc_bound, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, nTry, nMultistart, 46);
+[gpM2_avg_pens.hyp, gpM2_avg_pens.mu, gpM2_avg_pens.s2, gpM2_avg_pens.nlml, gpM2_avg_pens.exitflag, gpM2_avg_pens.max_c] = ...
+    fit_gp_lower_bound(newtimeM2', datapointsM2', gpM2_avg.hyp, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, covfunc_bound, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, nTry, nMultistart, 47);
+
+fprintf('M1 avg bounded (lower only): ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM1_avg_pens.hyp.cov(1)), exp(gpM1_avg_pens.hyp.cov(2)), exp(gpM1_avg_pens.hyp.lik), ...
+    gpM1_avg_pens.nlml, gpM1_avg_pens.exitflag, gpM1_avg_pens.max_c);
+fprintf('M2 avg bounded (lower only): ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(gpM2_avg_pens.hyp.cov(1)), exp(gpM2_avg_pens.hyp.cov(2)), exp(gpM2_avg_pens.hyp.lik), ...
+    gpM2_avg_pens.nlml, gpM2_avg_pens.exitflag, gpM2_avg_pens.max_c);
+
+sdM1_avg_pens = sqrt(max(gpM1_avg_pens.s2, 0));
+sdM2_avg_pens = sqrt(max(gpM2_avg_pens.s2, 0));
+ylim_avg_pens = [0, max([datapointsM1(:); datapointsM2(:); ...
+    gpM1_avg_pens.mu + k_plot * sdM1_avg_pens; gpM2_avg_pens.mu + k_plot * sdM2_avg_pens]) * 1.05];
+
+figure(112)
+tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM1_avg_pens.mu + k_plot*sdM1_avg_pens; flipud(gpM1_avg_pens.mu - k_plot*sdM1_avg_pens)], ...
+    'k', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M1 95% band');
+plot(tgrid, gpM1_avg_pens.mu, 'k', 'LineWidth', 2.0, 'DisplayName', 'M1 bounded GP mean')
+sM1_avg_p = scatter(newtime, datapointsM1, 'k', 'filled', 'DisplayName', 'M1 averaged data');
+sM1_avg_p.Marker = 'hexagram';
+sM1_avg_p.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M1 Pensoneault lower-bound GP (averaged, SE)')
+legend('Location', 'northwest')
+ylim(ylim_avg_pens)
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+nexttile;
+hold on
+fill([tgrid; flipud(tgrid)], [gpM2_avg_pens.mu + k_plot*sdM2_avg_pens; flipud(gpM2_avg_pens.mu - k_plot*sdM2_avg_pens)], ...
+    'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
+plot(tgrid, gpM2_avg_pens.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 bounded GP mean')
+sM2_avg_p = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg_p.Marker = 'hexagram';
+sM2_avg_p.SizeData = 150;
+yline(0, 'k:', 'HandleVisibility', 'off');
+hold off
+xlabel('Time (Days)', 'fontsize', 20)
+ylabel('cells/mm^2', 'fontsize', 20)
+title('M2 Pensoneault lower-bound GP (averaged, SE)')
+legend('Location', 'northwest')
+ylim(ylim_avg_pens)
+xlim([0, 14])
+set(gca, 'fontsize', 20)
+
+
+%% Bounded GP on averaged data (lower bound + data fidelity)
+epsilon = 50;
 fprintf('\n=== Pensoneault GP on averaged data (lower bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
 
 [gpM1_avg_bound.hyp, gpM1_avg_bound.mu, gpM1_avg_bound.s2, gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c, c_final_M1] = ...
     fit_gp_lower_bound(newtime', datapointsM1', gpM1_avg.hyp, X_c, k_pens, tgrid, ...
     inffunc, meanfunc, covfunc_bound, likfunc, hyp_lb_avg_M1, hyp_ub_avg_M1, opts_pens, nTry, nMultistart, 44, epsilon);
 [gpM2_avg_bound.hyp, gpM2_avg_bound.mu, gpM2_avg_bound.s2, gpM2_avg_bound.nlml, gpM2_avg_bound.exitflag, gpM2_avg_bound.max_c, c_final_M2] = ...
-    fit_gp_lower_bound(newtime', datapointsM2', gpM2_avg.hyp, X_c, k_pens, tgrid, ...
+    fit_gp_lower_bound(newtimeM2', datapointsM2', gpM2_avg.hyp, X_c, k_pens, tgrid, ...
     inffunc, meanfunc, covfunc_bound, likfunc, hyp_lb_avg_M2, hyp_ub_avg_M2, opts_pens, nTry, nMultistart, 45, epsilon);
 
 nC = numel(X_c);
@@ -595,7 +656,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M1 Pensoneault GP (averaged, Matern 5/2, \\epsilon = %.0f)', epsilon))
+title(sprintf('M1 Pensoneault GP (averaged, SE, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
 xlim([0, 14])
@@ -607,19 +668,18 @@ hold on
 fill([tgrid; flipud(tgrid)], [gpM2_avg_bound.mu + k_plot*sdM2_avg_bound; flipud(gpM2_avg_bound.mu - k_plot*sdM2_avg_bound)], ...
     'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none', 'DisplayName', 'M2 95% band');
 plot(tgrid, gpM2_avg_bound.mu, 'r', 'LineWidth', 2.0, 'DisplayName', 'M2 bounded GP mean')
-sM2_avg_b = scatter(newtime, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
+sM2_avg_b = scatter(newtimeM2, datapointsM2, 'r', 'filled', 'DisplayName', 'M2 averaged data');
 sM2_avg_b.Marker = 'hexagram';
 sM2_avg_b.SizeData = 150;
 yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M2 Pensoneault GP (averaged, Matern 5/2, \\epsilon = %.0f)', epsilon))
+title(sprintf('M2 Pensoneault GP (averaged, SE, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
 xlim([0, 14])
 set(gca, 'fontsize', 20)
-%}
 
 
 %% Obtain Derivative Information 
@@ -744,6 +804,8 @@ hyp = minimize(hyp, @gp, -100, inffunc, meanfunc, covfunc, likfunc, x, y);
 [mu, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xs);
 end
 
+% --- Transform GP helpers (disabled) ---
+%{
 function [hyp, mu_log, s2_log, mu_orig, lo_orig, hi_orig] = fit_gp_log1p( ...
     x, y, xs, k_band, inffunc, meanfunc, covfunc, likfunc)
 % Homoscedastic SE GP on z = log1p(y); back-transform mean/bands to original scale.
@@ -773,9 +835,8 @@ mu_orig = mu_sqrt.^2;
 lo_orig = max(0, mu_sqrt - k_band * sd_sqrt).^2;
 hi_orig = (mu_sqrt + k_band * sd_sqrt).^2;
 end
+%}
 
-% --- Pensoneault lower-bound helpers (disabled) ---
-%{
 function [hyp, mu, s2, nlml, exitflag, max_c, c_final, nFeas] = fit_gp_lower_bound( ...
     x, y, hyp_unc, X_c, k, xs, inffunc, meanfunc, covfunc, likfunc, ...
     hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed, epsilon, verbose)
@@ -953,4 +1014,3 @@ set(gca, 'fontsize', 14);
 
 sgtitle(sprintf('%s epsilon sweep (lower bound + data fidelity, nTry=%d)', state_label, nTry));
 end
-%}
