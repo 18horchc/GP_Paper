@@ -82,8 +82,14 @@ y_col = y_train(:);
 %% Baseline GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
 sn_fixed = log(noise_sd_true);
 fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
-obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
+obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col); %this step is done to hide hyp.lik form the optimizer (minmize()), so that we can keep sn fixed. [hyp.lik = log(sn)]
+hyp_cov_unc = minimize(hyp.cov, obj_unc, -100); %if you call gp directly though minimize, sn will be optimized too
+%another way to do this is to wrap the inference in infPrior and 'clamp'
+%hyp.lik. Could look into if desired. It would remove the extra helper file, but require more setup to call. 
+% Something along the lines of: 
+    %prior.lik = {@priorClamped};   % or {@priorDelta}
+    %inf = {@infPrior, @infGaussLik, prior};
+    %hyp_unc = minimize(hyp, @gp, -100, inf, meanfunc, covfunc, likfunc, x_col, y_col);
 hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
 nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 

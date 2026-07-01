@@ -208,12 +208,17 @@ fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
 fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_con, exitflag_con, max(c_final));
 
+% helper so that theta can be used by gp() function
 function hyp = theta_to_hyp(theta, hyp_tpl)
 hyp = hyp_tpl;
 hyp.cov = theta(1:2);
 hyp.mean = [];
 end
 
+%helper for fmincon. 
+% Must be nonlinear constraints in the form c(theta) <= 0
+% For a candidate hyperparameter vector theta, it runs the GP posterior at 
+% the grid points and the training points in one call:
 function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
     x, y, X_c, k, y_max, epsilon)
 % Pensoneault-style constraints: upper bound on latent f at X_c; data fidelity tube.
@@ -223,9 +228,9 @@ xstar = [X_c(:); x(:)];
 [ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
 m_xc = fmu(1:nC);
 s_xc = sqrt(max(fs2(1:nC), 0));
-c_upper = m_xc + k .* s_xc - y_max;
+c_upper = m_xc + k .* s_xc - y_max; %upper bound constraint
 y_star = ymu(nC+1:end);
-c_data = abs(y - y_star) - epsilon;
+c_data = abs(y - y_star) - epsilon; %data fidelity constraint
 c = [c_upper; c_data(:)];
 ceq = [];
 end

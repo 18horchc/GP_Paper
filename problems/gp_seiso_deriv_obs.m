@@ -117,6 +117,7 @@ m_deriv = m_deriv(:);
 s2_deriv = s2_deriv(:);
 end
 
+
 function [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv)
 x = x(:); y = y(:); x_d = x_d(:); y_d = y_d(:);
 n = numel(x); m = numel(x_d);
@@ -128,6 +129,7 @@ sn2 = exp(2 * hyp.lik(1));
 sn_deriv2 = sn_deriv^2;
 jitter = 1e-10;
 
+%building cov blocks
 K_ff = seiso_Kff(x, x, ell, sf2);
 K_fd = seiso_Kfd(x, x_d, ell, sf2);
 K_df = seiso_Kdf(x_d, x, ell, sf2);
@@ -135,10 +137,11 @@ K_dd = seiso_Kdd(x_d, x_d, ell, sf2);
 
 K_aug = [K_ff, K_fd; K_df, K_dd];
 noise = [sn2 * ones(n, 1); sn_deriv2 * ones(m, 1)];
-Ky = K_aug + diag(noise + jitter);
+Ky = K_aug + diag(noise + jitter); %jitter for numerical stability
 z = [y; y_d];
 end
 
+%SE kernel blocks:
 function K = seiso_Kff(xa, xb, ell, sf2)
 R = xa - xb.';
 K = sf2 * exp(-0.5 * (R ./ ell).^2);
