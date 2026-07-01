@@ -67,7 +67,7 @@ study_idsM2 = [1, 1, 1, 1, 1, ...   % Hu2012
 
 %% GP
 % Fit Gaussian Process to the data using the GPML toolbox with a zero mean
-% function and squared exponential (covSEiso) covariance function.
+% function and Matern 5/2 (covMaterniso) covariance function.
 
 % --- GPML setup ---
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -84,8 +84,8 @@ catch
 end
 
 meanfunc = @meanZero;       % zero mean
-covfunc  = @covSEiso;       % squared exponential kernel
-covfunc_bound = @covSEiso;   % squared exponential kernel (constrained GPs)
+covfunc  = {@covMaterniso, 2.5};       % Matern 5/2 kernel
+covfunc_bound = {@covMaterniso, 2.5};  % Matern 5/2 kernel (constrained GPs)
 likfunc  = @likGauss;       % Gaussian likelihood
 inffunc  = @infGaussLik;    % exact inference
 
@@ -146,7 +146,7 @@ sM1_sub.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 GP fit (full data, SE)')
+title('M1 GP fit (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-500, 1400])
 xlim([0, 14])
@@ -164,7 +164,7 @@ sM2_sub.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 GP fit (full data, SE)')
+title('M2 GP fit (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-500, 1400])
 xlim([0, 14])
@@ -172,7 +172,7 @@ set(gca, 'fontsize', 20)
 
 
 %% GP on averaged data
-% Unconstrained SE-kernel GP: M1 on newtime; M2 on newtimeM2 (day 5 excluded for M2).
+% Unconstrained Matern 5/2 GP: M1 on newtime; M2 on newtimeM2 (day 5 excluded for M2).
 
 [gpM1_avg.hyp, gpM1_avg.mu, gpM1_avg.s2] = fit_gp(newtime', datapointsM1', tgrid, ...
     inffunc, meanfunc, covfunc, likfunc);
@@ -197,7 +197,7 @@ sM1_avg.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 GP fit (averaged data, SE)')
+title('M1 GP fit (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 1000])
 xlim([0, 14])
@@ -215,7 +215,7 @@ sM2_avg.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 GP fit (averaged data, SE)')
+title('M2 GP fit (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 1000])
 xlim([0, 14])
@@ -224,8 +224,8 @@ set(gca, 'fontsize', 20)
 
 %% Bounded GP (Pensoneault lower bound at 0)
 % Probabilistic lower bound mu_f(x) - k*sigma_f(x) >= 0 on 41 equispaced points.
-% SE kernel, zero mean; hyperparameters (ell, sf) optimized via fmincon with sigma_n
-% fixed from the unconstrained SE fits above.
+% Matern 5/2 kernel, zero mean; hyperparameters (ell, sf) optimized via fmincon with sigma_n
+% fixed from the unconstrained Matern 5/2 fits above.
 
 x_min = 0;
 x_max = 14;
@@ -291,7 +291,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 Pensoneault lower-bound GP (SE)')
+title('M1 Pensoneault lower-bound GP (Matern 5/2)')
 legend('Location', 'northwest')
 ylim(ylim_bound)
 xlim([0, 14])
@@ -310,7 +310,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 Pensoneault lower-bound GP (SE)')
+title('M2 Pensoneault lower-bound GP (Matern 5/2)')
 legend('Location', 'northwest')
 ylim(ylim_bound)
 xlim([0, 14])
@@ -342,7 +342,7 @@ sM1_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 log1p GP (full data, SE)')
+title('M1 log1p GP (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 4000])
 xlim([0, 14])
@@ -359,7 +359,7 @@ sM2_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 log1p GP (full data, SE)')
+title('M2 log1p GP (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 4000])
 xlim([0, 14])
@@ -387,7 +387,7 @@ sM1_avg_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 log1p GP (averaged data, SE)')
+title('M1 log1p GP (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 4000])
 xlim([0, 14])
@@ -404,7 +404,7 @@ sM2_avg_log.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 log1p GP (averaged data, SE)')
+title('M2 log1p GP (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([-100, 4000])
 xlim([0, 14])
@@ -434,7 +434,7 @@ sM1_sqrt.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 sqrt GP (full data, SE)')
+title('M1 sqrt GP (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([0, 1400])
 xlim([0, 14])
@@ -451,7 +451,7 @@ sM2_sqrt.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 sqrt GP (full data, SE)')
+title('M2 sqrt GP (full data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([0, 1400])
 xlim([0, 14])
@@ -479,7 +479,7 @@ sM1_avg_sqrt.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 sqrt GP (averaged data, SE)')
+title('M1 sqrt GP (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([0, 1000])
 xlim([0, 14])
@@ -496,7 +496,7 @@ sM2_avg_sqrt.SizeData = 150;
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 sqrt GP (averaged data, SE)')
+title('M2 sqrt GP (averaged data, Matern 5/2)')
 legend('Location', 'northwest')
 ylim([0, 1000])
 xlim([0, 14])
@@ -551,7 +551,7 @@ hyp_ub_avg_M2 = log([ell_ub; sf_bounds_avg_M2(2)]);
 
 
 %% Bounded GP on averaged data (lower bound only)
-% Pensoneault lower bound at 0 on averaged data (SE kernel); no data-fidelity tube.
+% Pensoneault lower bound at 0 on averaged data (Matern 5/2 kernel); no data-fidelity tube.
 
 fprintf('\n=== Pensoneault GP on averaged data (lower bound at 0) ===\n');
 
@@ -589,7 +589,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M1 Pensoneault lower-bound GP (averaged, SE)')
+title('M1 Pensoneault lower-bound GP (averaged, Matern 5/2)')
 legend('Location', 'northwest')
 ylim(ylim_avg_pens)
 xlim([0, 14])
@@ -607,7 +607,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title('M2 Pensoneault lower-bound GP (averaged, SE)')
+title('M2 Pensoneault lower-bound GP (averaged, Matern 5/2)')
 legend('Location', 'northwest')
 ylim(ylim_avg_pens)
 xlim([0, 14])
@@ -615,7 +615,7 @@ set(gca, 'fontsize', 20)
 
 
 %% Bounded GP on averaged data (lower bound + data fidelity)
-epsilon = 50;
+epsilon = 115;
 fprintf('\n=== Pensoneault GP on averaged data (lower bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
 
 [gpM1_avg_bound.hyp, gpM1_avg_bound.mu, gpM1_avg_bound.s2, gpM1_avg_bound.nlml, gpM1_avg_bound.exitflag, gpM1_avg_bound.max_c, c_final_M1] = ...
@@ -656,7 +656,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M1 Pensoneault GP (averaged, SE, \\epsilon = %.0f)', epsilon))
+title(sprintf('M1 Pensoneault GP (averaged, Matern 5/2, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
 xlim([0, 14])
@@ -675,7 +675,7 @@ yline(0, 'k:', 'HandleVisibility', 'off');
 hold off
 xlabel('Time (Days)', 'fontsize', 20)
 ylabel('cells/mm^2', 'fontsize', 20)
-title(sprintf('M2 Pensoneault GP (averaged, SE, \\epsilon = %.0f)', epsilon))
+title(sprintf('M2 Pensoneault GP (averaged, Matern 5/2, \\epsilon = %.0f)', epsilon))
 legend('Location', 'northwest')
 ylim(ylim_avg_bound)
 xlim([0, 14])
@@ -784,7 +784,7 @@ set(gca, 'fontsize', 20)
 % rhs = [dM1; dM2];
 % end
 
-%% Function to fit a GP with GPML (zero mean, SE kernel)
+%% Function to fit a GP with GPML (zero mean, Matern 5/2 kernel)
 function [hyp, mu, s2] = fit_gp(x, y, xs, inffunc, meanfunc, covfunc, likfunc)
 x = x(:); y = y(:); xs = xs(:);
 
@@ -794,7 +794,7 @@ sf0  = std(y);              % signal standard deviation
 sn0  = 0.1 * std(y);        % observation noise standard deviation
 
 hyp.mean = [];                      % meanZero has no parameters
-hyp.cov  = log([ell0; sf0]);        % covSEiso: [log(ell); log(sf)]
+hyp.cov  = log([ell0; sf0]);        % covMaterniso: [log(ell); log(sf)]
 hyp.lik  = log(sn0);                % likGauss: log(sn)
 
 % Optimize hyperparameters by minimizing the negative log marginal likelihood
