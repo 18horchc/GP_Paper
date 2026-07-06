@@ -25,7 +25,9 @@ close all; clc;
 %% ===== Configuration =====
 kernel_name       = 'se';  % 'matern32' | 'matern52' | 'se' | 'rq'
 k_plot            = 1.96;        % ~95% band multiplier
+%{
 t_impute          = 5;           % day for M2 imputation highlight (M2 has no obs here)
+%}
 max_iters         = -200;        % GPML minimize budget (<0 = function evals)
 run_se_smoke_test = false;       % set true to verify SE temporal kernel on full data
 if ~isempty(overrideSe)
@@ -45,8 +47,8 @@ end
 %% ===== Data (same as microglia.m) =====
 newtime = [0, 1, 2, 3, 5, 7, 14];
 datapointsM1 = [5, 27.5, 122.5, 139.8, 325, 445, 816.67];
-newtimeM2 = [0, 1, 2, 3, 7, 14];
-datapointsM2 = [5, 78.33, 179.5, 126.4, 319, 136.67];
+newtimeM2 = [0, 1, 2, 3, 5, 7, 14];
+datapointsM2 = [5, 78.33, 179.5, 126.4, 800, 319, 136.67];
 
 timeM1 = [0, 1, 3, 5, 7, 14, ...
           3, 7, ...
@@ -65,7 +67,7 @@ dataM1 = [0, 5, 375, 325, 600, 750, ...
           10, 50, 100, 900, 1300, ...
           60, 225];
 
-timeM2 = [0, 1, 3, 7, 14, ...
+timeM2 = [0, 1, 3, 5, 7, 14, ...   % Hu2012 (day 5 restored)
           1, 3, 7, ...
           2, ...
           14, ...
@@ -73,7 +75,7 @@ timeM2 = [0, 1, 3, 7, 14, ...
           2, ...
           0, 1, 3, 7, 14, ...
           3, 7];
-dataM2 = [0, 170, 300, 600, 200, ...
+dataM2 = [0, 170, 300, 800, 600, 200, ...
           15, 15, 6, ...
           90, ...
           110, ...
@@ -135,7 +137,7 @@ for didx = 1:numel(datasets)
     naive = fit_naive_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
     icm = fit_icm_mogp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
-        tgrid, temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot);
+        tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
 
     %{
     naive = fit_naive_log_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
@@ -180,10 +182,12 @@ for didx = 1:numel(results)
         fit = methods{midx};
         plot_phenotype(ax, tgrid, fit.M1, ds.timeM1, ds.dataM1, col_M1, k_plot, 'M1');
         plot_phenotype(ax, tgrid, fit.M2, ds.timeM2, ds.dataM2, col_M2, k_plot, 'M2');
+        %{
         if strcmp(ds.name, 'full') && midx == 2
             xline(t_impute, ':', 'Color', [0.4, 0.4, 0.4], 'LineWidth', 1.2, ...
                 'DisplayName', sprintf('M2 impute t=%g', t_impute));
         end
+        %}
         xlabel('Time (days)');
         ylabel('cells/mm^2');
         title(sprintf('%s — %s', ds.name, method_titles{midx}), 'Interpreter', 'none');
@@ -248,9 +252,11 @@ if run_se_smoke_test
     fprintf('\n=== Kernel smoke test: SE (full data) ===\n');
     se_kernel = build_temporal_kernel('se');
     se_fit = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
-        se_kernel, meanfunc, likfunc, -100, t_impute, k_plot);
-    fprintf('SE ICM: NLML=%.4f, ell=%.4f, rho=%.4f, M2@day5=%.2f\n', ...
-        se_fit.report.nlml, se_fit.report.ell, se_fit.report.rho, se_fit.report.M2_at_t);
+        se_kernel, meanfunc, likfunc, -100, k_plot);
+    fprintf('SE ICM: NLML=%.4f, ell=%.4f, rho=%.4f\n', ...
+        se_fit.report.nlml, se_fit.report.ell, se_fit.report.rho);
+    % fprintf('SE ICM: NLML=%.4f, ell=%.4f, rho=%.4f, M2@day5=%.2f\n', ...
+    %     se_fit.report.nlml, se_fit.report.ell, se_fit.report.rho, se_fit.report.M2_at_t);
     %{
     se_fit = fit_icm_mogp_log(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
         se_kernel, meanfunc, likfunc, -100, t_impute, k_plot);
@@ -336,7 +342,7 @@ gp(hyp0, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
 end
 
 function out = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
-    temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot)
+    temporalKernel, meanfunc, likfunc, max_iters, k_plot)
 
 LABEL_M1 = 1;
 LABEL_M2 = 2;
@@ -380,8 +386,10 @@ out.report.ell = exp(hyp.cov(1));
 out.report.B = B;
 out.report.rho = corr_from_B(B);
 out.report.sn = exp(hyp.lik);
+%{
 out.report.M2_at_t = interp1(tgrid, out.M2.mu, t_impute, 'linear', 'extrap');
 out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, t_impute, 'linear', 'extrap');
+%}
 end
 
 function out = fit_naive_gp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
@@ -406,8 +414,10 @@ out.report.sn_M1 = exp(fit1.hyp.lik);
 out.report.sn_M2 = exp(fit2.hyp.lik);
 out.report.B = [];
 out.report.rho = NaN;
+%{
 out.report.M2_at_t = interp1(tgrid, out.M2.mu, 5, 'linear', 'extrap');
 out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, 5, 'linear', 'extrap');
+%}
 end
 
 function fit = fit_single_gp(x, y, tgrid, temporalKernel, meanfunc, likfunc, max_iters)
@@ -454,7 +464,10 @@ if ~isempty(report.B)
 else
     fprintf(', ell_M1=%.4f, ell_M2=%.4f', report.ell_M1, report.ell_M2);
 end
+%{
 fprintf('\n  M2 at t=5: mean=%.2f, sd=%.4f\n', report.M2_at_t, report.M2_at_t_sd);
+%}
+fprintf('\n');
 end
 
 function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, ~, name)
