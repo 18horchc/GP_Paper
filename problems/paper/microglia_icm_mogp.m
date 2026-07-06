@@ -1,37 +1,45 @@
-% microglia_icm_mogp.m — Baseline 1: log-count ICM multi-output GP for M1/M2.
-% Joint GP on z_d(t) = log(1 + M_d(t)/count_delta) with ICM covariance
-%   cov{z_d(t), z_d'(t')} = B_{dd'} k(t,t'),
-% back-transform M_d(t) = count_delta * expm1(z_d(t)).
-% Compares ICM vs independent log-scale GPs on full and averaged data.
+% microglia_icm_mogp.m — Baseline 1: raw-count ICM multi-output GP for M1/M2.
+% Joint GP on raw counts M_d(t) with ICM covariance
+%   cov{M_d(t), M_d'(t')} = B_{dd'} k(t,t').
+% Compares ICM vs independent raw-scale GPs on full and averaged data.
+%
+% Log-count path (z = log(1 + M/count_delta), back-transform via expm1) is
+% preserved in %{ ... %} blocks below for easy restoration.
 
-% Optional overrides from caller workspace (before run): run_se_smoke_test, run_delta_sweep
+% Optional overrides from caller workspace (before run): run_se_smoke_test
 overrideSe = [];
-overrideSweep = [];
 if evalin('caller', 'exist(''run_se_smoke_test'',''var'')')
     overrideSe = evalin('caller', 'run_se_smoke_test');
 end
+%{
+overrideSweep = [];
 if evalin('caller', 'exist(''run_delta_sweep'',''var'')')
     overrideSweep = evalin('caller', 'run_delta_sweep');
 end
+%}
 
-clearvars -except overrideSe overrideSweep;
+clearvars -except overrideSe;
 close all; clc;
 
 %% ===== Configuration =====
-count_delta_override = [];    % scalar to override default; [] uses default rule
-kernel_name          = 'matern52';  % 'matern32' | 'matern52' | 'se' | 'rq'
-k_plot         = 1.96;        % ~95% band multiplier on latent scale
-t_impute       = 5;           % day for M2 imputation highlight (M2 has no obs here)
-max_iters      = -200;        % GPML minimize budget (<0 = function evals)
-run_delta_sweep = true;       % sensitivity over count_delta_default * [0.5, 1, 2]
-run_se_smoke_test = false;    % set true to verify SE temporal kernel on full data
-if ~isempty(overrideSweep)
-    run_delta_sweep = overrideSweep;
-end
+kernel_name       = 'matern52';  % 'matern32' | 'matern52' | 'se' | 'rq'
+k_plot            = 1.96;        % ~95% band multiplier
+t_impute          = 5;           % day for M2 imputation highlight (M2 has no obs here)
+max_iters         = -200;        % GPML minimize budget (<0 = function evals)
+run_se_smoke_test = false;       % set true to verify SE temporal kernel on full data
 if ~isempty(overrideSe)
     run_se_smoke_test = overrideSe;
 end
-clear overrideSe overrideSweep;
+clear overrideSe;
+
+%{
+% --- log-count path config (commented out) ---
+count_delta_override = [];
+run_delta_sweep = true;
+if ~isempty(overrideSweep)
+    run_delta_sweep = overrideSweep;
+end
+%}
 
 %% ===== Data (same as microglia.m) =====
 newtime = [0, 1, 2, 3, 5, 7, 14];
@@ -80,7 +88,11 @@ datasets = struct( ...
     'timeM2', {timeM2(:), newtimeM2(:)}, ...
     'dataM2', {dataM2(:), datapointsM2(:)});
 
-%% ===== count_delta (fixed preprocessing, user-visible) =====
+fprintf('=== Raw-count ICM MOGP baseline ===\n');
+fprintf('kernel = %s\n', kernel_name);
+
+%{
+% --- log-count path: count_delta preprocessing (commented out) ---
 pos_all = [dataM1(dataM1 > 0); dataM2(dataM2 > 0)];
 count_delta_default = 0.5 * min(pos_all, [], 'all');
 count_delta = count_delta_default;
@@ -91,6 +103,7 @@ fprintf('=== Log-count ICM MOGP baseline ===\n');
 fprintf('count_delta = %.4g (default: half of min positive count = %.4g)\n', ...
     count_delta, count_delta_default);
 fprintf('kernel = %s\n', kernel_name);
+%}
 
 %% ===== GPML setup =====
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -118,10 +131,17 @@ for didx = 1:numel(datasets)
     ds = datasets(didx);
     fprintf('\n--- Dataset: %s ---\n', ds.name);
 
+    naive = fit_naive_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
+        tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
+    icm = fit_icm_mogp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
+        tgrid, temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot);
+
+    %{
     naive = fit_naive_log_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         count_delta, tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
-    icm = fit_icm_mogp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
+    icm = fit_icm_mogp_log(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         count_delta, tgrid, temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot);
+    %}
 
     results(didx).name = ds.name;
     results(didx).naive = naive;
@@ -131,8 +151,12 @@ for didx = 1:numel(datasets)
     results(didx).timeM2 = ds.timeM2;
     results(didx).dataM2 = ds.dataM2;
 
+    report_fit(ds.name, 'Naive GP (independent)', naive.report);
+    report_fit(ds.name, 'ICM MOGP (coupled)', icm.report);
+    %{
     report_fit(ds.name, 'Naive log-GP', naive.report);
-    report_fit(ds.name, 'ICM MOGP', icm.report);
+    report_fit(ds.name, 'ICM MOGP (log)', icm.report);
+    %}
 end
 
 %% ===== Comparison figure: 2 x 2 (dataset x method) =====
@@ -140,13 +164,13 @@ col_M1 = [0.10, 0.10, 0.10];
 col_M2 = [0.85, 0.16, 0.16];
 
 figure('Color', 'w', 'Position', [60, 60, 1240, 900], ...
-    'Name', 'Microglia: naive log-GP vs log-count ICM MOGP');
+    'Name', 'Microglia: naive GP vs raw-count ICM MOGP');
 tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 for didx = 1:numel(results)
     ds = results(didx);
     methods = {ds.naive, ds.icm};
-    method_titles = {'Naive log-GP (independent)', 'ICM MOGP (coupled)'};
+    method_titles = {'Naive GP (independent)', 'ICM MOGP (coupled)'};
 
     for midx = 1:2
         nexttile;
@@ -168,7 +192,8 @@ for didx = 1:numel(results)
     end
 end
 
-%% ===== Delta sensitivity (full data, ICM only) =====
+%{
+%% ===== Delta sensitivity (full data, ICM only) — log-count path =====
 if run_delta_sweep
     fprintf('\n=== Delta sensitivity (full data, ICM) ===\n');
     delta_sweep = count_delta_default * [0.5, 1, 2];
@@ -186,7 +211,7 @@ if run_delta_sweep
     fprintf('%-10s  %-10s  %-8s  %-12s  %-12s\n', 'delta', 'NLML', 'rho', 'M2@day5', 'M2@day5_sd');
     for sidx = 1:n_sweep
         dval = delta_sweep(sidx);
-        fit_s = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, ...
+        fit_s = fit_icm_mogp_log(timeM1, dataM1, timeM2, dataM2, ...
             dval, tgrid, temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot);
         sweep(sidx).nlml = fit_s.report.nlml;
         sweep(sidx).rho = fit_s.report.rho;
@@ -214,15 +239,20 @@ if run_delta_sweep
     plot(deltas, cellfun(@(x) x, {sweep.M2_day5}), 'o-', 'LineWidth', 1.5);
     xlabel('\delta'); ylabel('M2 mean at day 5'); title('M2 imputation'); grid on;
 end
+%}
 
 %% ===== Optional SE kernel smoke test =====
 if run_se_smoke_test
     fprintf('\n=== Kernel smoke test: SE (full data) ===\n');
     se_kernel = build_temporal_kernel('se');
-    se_fit = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
+    se_fit = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
         se_kernel, meanfunc, likfunc, -100, t_impute, k_plot);
     fprintf('SE ICM: NLML=%.4f, ell=%.4f, rho=%.4f, M2@day5=%.2f\n', ...
         se_fit.report.nlml, se_fit.report.ell, se_fit.report.rho, se_fit.report.M2_at_t);
+    %{
+    se_fit = fit_icm_mogp_log(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
+        se_kernel, meanfunc, likfunc, -100, t_impute, k_plot);
+    %}
 end
 
 fprintf('\nDone.\n');
@@ -242,14 +272,6 @@ switch lower(name)
     otherwise
         error('Unknown kernel: %s (use matern32, matern52, se, rq)', name);
 end
-end
-
-function z = count_to_log(M, count_delta)
-z = log(1 + max(M(:), 0) ./ count_delta);
-end
-
-function M = log_to_count(z, count_delta)
-M = count_delta .* expm1(z(:));
 end
 
 function B = chol2cov(hyp)
@@ -308,11 +330,157 @@ if hasAlpha
 end
 inffunc = {@infPrior, @infGaussLik, prior};
 
-% Touch GPML to validate hyperparameter layout before optimization.
 gp(hyp0, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
 end
 
-function out = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
+function out = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
+    temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot)
+
+LABEL_M1 = 1;
+LABEL_M2 = 2;
+
+y_M1 = max(dataM1(:), 0);
+y_M2 = max(dataM2(:), 0);
+mu1 = mean(y_M1); sd1 = std(y_M1);
+mu2 = mean(y_M2); sd2 = std(y_M2);
+if sd1 < eps, sd1 = 1; end
+if sd2 < eps, sd2 = 1; end
+
+x_aug = [timeM1(:), LABEL_M1 * ones(numel(timeM1), 1); ...
+         timeM2(:), LABEL_M2 * ones(numel(timeM2), 1)];
+y_aug = [ (y_M1 - mu1) / sd1; (y_M2 - mu2) / sd2 ];
+
+covICM = build_icm_kernel(temporalKernel);
+[hyp0, ~, inffunc] = init_icm_hyp(temporalKernel, x_aug, y_aug);
+
+hyp = minimize(hyp0, @gp, max_iters, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
+nlml = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
+
+x_te_M1 = [tgrid, LABEL_M1 * ones(size(tgrid))];
+x_te_M2 = [tgrid, LABEL_M2 * ones(size(tgrid))];
+[~, ~, fmu1, fs21] = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug, x_te_M1);
+[~, ~, fmu2, fs22] = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug, x_te_M2);
+
+mu_y1 = mu1 + sd1 * fmu1(:);
+sf_y1 = sd1 * sqrt(max(fs21(:), 0));
+mu_y2 = mu2 + sd2 * fmu2(:);
+sf_y2 = sd2 * sqrt(max(fs22(:), 0));
+
+out.M1 = pack_raw_fit(mu_y1, sf_y1, k_plot);
+out.M2 = pack_raw_fit(mu_y2, sf_y2, k_plot);
+out.hyp = hyp;
+out.nlml = nlml;
+
+[nTemp, ~] = temporal_hyp_layout(temporalKernel);
+B = chol2cov(hyp.cov(nTemp + (1:3)));
+out.report.nlml = nlml;
+out.report.ell = exp(hyp.cov(1));
+out.report.B = B;
+out.report.rho = corr_from_B(B);
+out.report.sn = exp(hyp.lik);
+out.report.M2_at_t = interp1(tgrid, out.M2.mu, t_impute, 'linear', 'extrap');
+out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, t_impute, 'linear', 'extrap');
+end
+
+function out = fit_naive_gp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
+    temporalKernel, meanfunc, likfunc, max_iters, k_plot)
+
+y_M1 = max(dataM1(:), 0);
+y_M2 = max(dataM2(:), 0);
+
+fit1 = fit_single_gp(timeM1, y_M1, tgrid, temporalKernel, meanfunc, likfunc, max_iters);
+fit2 = fit_single_gp(timeM2, y_M2, tgrid, temporalKernel, meanfunc, likfunc, max_iters);
+
+out.M1 = pack_raw_fit(fit1.mu_y, fit1.sf_y, k_plot);
+out.M2 = pack_raw_fit(fit2.mu_y, fit2.sf_y, k_plot);
+out.hyp_M1 = fit1.hyp;
+out.hyp_M2 = fit2.hyp;
+out.nlml = fit1.nlml + fit2.nlml;
+
+out.report.nlml = out.nlml;
+out.report.ell_M1 = exp(fit1.hyp.cov(1));
+out.report.ell_M2 = exp(fit2.hyp.cov(1));
+out.report.sn_M1 = exp(fit1.hyp.lik);
+out.report.sn_M2 = exp(fit2.hyp.lik);
+out.report.B = [];
+out.report.rho = NaN;
+out.report.M2_at_t = interp1(tgrid, out.M2.mu, 5, 'linear', 'extrap');
+out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, 5, 'linear', 'extrap');
+end
+
+function fit = fit_single_gp(x, y, tgrid, temporalKernel, meanfunc, likfunc, max_iters)
+x = x(:); y = y(:);
+inffunc = @infGaussLik;
+ell0 = max(std(x), 0.5);
+sf0 = max(std(y), 0.1);
+sn0 = 0.1 * sf0;
+
+[nTemp, hasAlpha] = temporal_hyp_layout(temporalKernel);
+if hasAlpha
+    hyp.mean = [];
+    hyp.cov = log([ell0; sf0; 1]);
+else
+    hyp.mean = [];
+    hyp.cov = log([ell0; sf0]);
+end
+hyp.lik = log(sn0);
+
+hyp = minimize(hyp, @gp, max_iters, inffunc, meanfunc, temporalKernel, likfunc, x, y);
+nlml = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, y);
+[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, y, tgrid);
+
+fit.hyp = hyp;
+fit.nlml = nlml;
+fit.mu_y = fmu(:);
+fit.sf_y = sqrt(max(fs2(:), 0));
+end
+
+function pheno = pack_raw_fit(mu, sf, k_plot)
+pheno.mu = mu(:);
+pheno.sf = sf(:);
+pheno.lo = max(0, mu - k_plot .* sf);
+pheno.hi = mu + k_plot .* sf;
+end
+
+function report_fit(dataset_name, method_name, report)
+fprintf('[%s | %s] NLML=%.4f', dataset_name, method_name, report.nlml);
+if ~isempty(report.B)
+    fprintf(', ell=%.4f, rho=%.4f, sn=%.4f', report.ell, report.rho, report.sn);
+    fprintf('\n  B = [%.4f %.4f; %.4f %.4f]', ...
+        report.B(1,1), report.B(1,2), report.B(2,1), report.B(2,2));
+else
+    fprintf(', ell_M1=%.4f, ell_M2=%.4f', report.ell_M1, report.ell_M2);
+end
+fprintf('\n  M2 at t=5: mean=%.2f, sd=%.4f\n', report.M2_at_t, report.M2_at_t_sd);
+end
+
+function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, ~, name)
+tg = tgrid(:)';
+lo = fit.lo(:)';
+hi = fit.hi(:)';
+mu = fit.mu(:)';
+fill(ax, [tg, fliplr(tg)], [hi, fliplr(lo)], col, ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
+    'DisplayName', sprintf('%s band', name));
+plot(ax, tgrid, mu, '--', 'Color', col, 'LineWidth', 2, ...
+    'DisplayName', sprintf('%s mean', name));
+scatter(ax, t_data, y_data, 36, 'filled', ...
+    'MarkerFaceColor', col, 'MarkerEdgeColor', 'k', ...
+    'DisplayName', sprintf('%s data', name));
+end
+
+%{
+% ===== Log-count path local functions (commented out) =====
+
+function z = count_to_log(M, count_delta)
+z = log(1 + max(M(:), 0) ./ count_delta);
+end
+
+function M = log_to_count(z, count_delta)
+M = count_delta .* expm1(z(:));
+end
+
+function out = fit_icm_mogp_log(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
     temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot)
 
 LABEL_M1 = 1;
@@ -417,7 +585,6 @@ fit.sf_z = sqrt(max(fs2(:), 0));
 end
 
 function pheno = pack_count_fit(mu_z, sf_z, count_delta, k_plot)
-% Approximate count-scale bands via count_delta*expm1 on latent mean +/- k*sf.
 pheno.mu_z = mu_z(:);
 pheno.sf_z = sf_z(:);
 pheno.mu = log_to_count(mu_z, count_delta);
@@ -426,7 +593,7 @@ pheno.lo = max(0, log_to_count(mu_z - k_plot .* sf_z, count_delta));
 pheno.hi = log_to_count(mu_z + k_plot .* sf_z, count_delta);
 end
 
-function report_fit(dataset_name, method_name, report)
+function report_fit_log(dataset_name, method_name, report)
 fprintf('[%s | %s] count_delta=%.4g, NLML=%.4f', ...
     dataset_name, method_name, report.count_delta, report.nlml);
 if ~isempty(report.B)
@@ -439,17 +606,4 @@ end
 fprintf('\n  M2 at t=5: mean=%.2f, latent-sd=%.4f\n', report.M2_at_t, report.M2_at_t_sd);
 end
 
-function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, ~, name)
-tg = tgrid(:)';
-lo = fit.lo(:)';
-hi = fit.hi(:)';
-mu = fit.mu(:)';
-fill(ax, [tg, fliplr(tg)], [hi, fliplr(lo)], col, ...
-    'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
-    'DisplayName', sprintf('%s band', name));
-plot(ax, tgrid, mu, '--', 'Color', col, 'LineWidth', 2, ...
-    'DisplayName', sprintf('%s mean', name));
-scatter(ax, t_data, y_data, 36, 'filled', ...
-    'MarkerFaceColor', col, 'MarkerEdgeColor', 'k', ...
-    'DisplayName', sprintf('%s data', name));
-end
+%}
