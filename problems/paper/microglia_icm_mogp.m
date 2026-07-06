@@ -2,6 +2,7 @@
 % Joint GP on raw counts M_d(t) with ICM covariance
 %   cov{M_d(t), M_d'(t')} = B_{dd'} k(t,t').
 % Compares ICM vs independent raw-scale GPs on full and averaged data.
+% Active raw path: fully unconstrained Gaussian predictions (negative mean/bands allowed).
 %
 % Log-count path (z = log(1 + M/count_delta), back-transform via expm1) is
 % preserved in %{ ... %} blocks below for easy restoration.
@@ -187,7 +188,8 @@ for didx = 1:numel(results)
         ylabel('cells/mm^2');
         title(sprintf('%s — %s', ds.name, method_titles{midx}), 'Interpreter', 'none');
         xlim([0, 14]);
-        ylim([0, inf]);
+        % ylim([0, inf]);  % clamped view (commented out)
+        ylim_auto_from_fit(ax, fit.M1, fit.M2, ds.dataM1, ds.dataM2);
         legend('Location', 'northwest', 'FontSize', 8);
     end
 end
@@ -438,8 +440,9 @@ end
 function pheno = pack_raw_fit(mu, sf, k_plot)
 pheno.mu = mu(:);
 pheno.sf = sf(:);
-pheno.lo = max(0, mu - k_plot .* sf);
+pheno.lo = mu - k_plot .* sf;
 pheno.hi = mu + k_plot .* sf;
+% pheno.lo = max(0, mu - k_plot .* sf);  % clamped lower band (commented out)
 end
 
 function report_fit(dataset_name, method_name, report)
@@ -467,6 +470,14 @@ plot(ax, tgrid, mu, '--', 'Color', col, 'LineWidth', 2, ...
 scatter(ax, t_data, y_data, 36, 'filled', ...
     'MarkerFaceColor', col, 'MarkerEdgeColor', 'k', ...
     'DisplayName', sprintf('%s data', name));
+end
+
+function ylim_auto_from_fit(ax, fitM1, fitM2, dataM1, dataM2)
+vals = [fitM1.lo(:); fitM1.hi(:); fitM1.mu(:); ...
+        fitM2.lo(:); fitM2.hi(:); fitM2.mu(:); ...
+        dataM1(:); dataM2(:)];
+pad = 0.05 * max(range(vals), 1);
+ylim(ax, [min(vals) - pad, max(vals) + pad]);
 end
 
 %{
