@@ -23,7 +23,7 @@ clearvars -except overrideSe;
 close all; clc;
 
 %% ===== Configuration =====
-kernel_name       = 'matern52';  % 'matern32' | 'matern52' | 'se' | 'rq'
+kernel_name       = 'se';  % 'matern32' | 'matern52' | 'se' | 'rq'
 k_plot            = 1.96;        % ~95% band multiplier
 t_impute          = 5;           % day for M2 imputation highlight (M2 has no obs here)
 max_iters         = -200;        % GPML minimize budget (<0 = function evals)
