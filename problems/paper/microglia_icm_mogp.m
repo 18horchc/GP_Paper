@@ -25,6 +25,19 @@ close all; clc;
 %% ===== Configuration =====
 kernel_name       = 'se';  % 'matern32' | 'matern52' | 'se' | 'rq'
 k_plot            = 1.96;        % ~95% band multiplier
+% Pensoneault lower-bound (Figure 2 ICM panels)
+eta_pens          = 0.022;       % 2.2% tail probability
+k_pens            = -sqrt(2) * erfinv(2 * eta_pens - 1);
+n_constraint      = 41;
+X_c               = linspace(0, 14, n_constraint)';
+ell_bounds_lo     = 0.05;
+ell_ub            = 14;
+opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
+    'EnableFeasibilityMode', true, 'Display', 'off', ...
+    'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
+    'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
+nTry_pens         = 2000;
+nMultistart_pens  = 10;
 %{
 t_impute          = 5;           % day for M2 imputation highlight (M2 has no obs here)
 %}
@@ -93,6 +106,8 @@ datasets = struct( ...
 
 fprintf('=== Raw-count ICM MOGP baseline ===\n');
 fprintf('kernel = %s\n', kernel_name);
+fprintf('Pensoneault lower bound: eta = %.3g%%, k = %.4f, X_c: %d points on [0, 14]\n', ...
+    100 * eta_pens, k_pens, n_constraint);
 
 %{
 % --- log-count path: count_delta preprocessing (commented out) ---
@@ -138,6 +153,9 @@ for didx = 1:numel(datasets)
         tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
     icm = fit_icm_mogp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
+    icm_bound = fit_icm_mogp_lower_bound(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
+        tgrid, temporalKernel, meanfunc, likfunc, icm.hyp, X_c, k_pens, k_plot, ...
+        opts_pens, nTry_pens, nMultistart_pens, 40 + didx);
 
     %{
     naive = fit_naive_log_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
@@ -149,6 +167,7 @@ for didx = 1:numel(datasets)
     results(didx).name = ds.name;
     results(didx).naive = naive;
     results(didx).icm = icm;
+    results(didx).icm_bound = icm_bound;
     results(didx).timeM1 = ds.timeM1;
     results(didx).dataM1 = ds.dataM1;
     results(didx).timeM2 = ds.timeM2;
@@ -156,6 +175,7 @@ for didx = 1:numel(datasets)
 
     report_fit(ds.name, 'Naive GP (independent)', naive.report);
     report_fit(ds.name, 'ICM MOGP (coupled)', icm.report);
+    report_fit_bounded(ds.name, 'ICM MOGP (Pensoneault lower bound)', icm_bound.report);
     %{
     report_fit(ds.name, 'Naive log-GP', naive.report);
     report_fit(ds.name, 'ICM MOGP (log)', icm.report);
@@ -193,6 +213,33 @@ for didx = 1:numel(results)
         title(sprintf('%s — %s', ds.name, method_titles{midx}), 'Interpreter', 'none');
         xlim([0, 14]);
         % ylim([0, inf]);  % clamped view (commented out)
+        ylim_auto_from_fit(ax, fit.M1, fit.M2, ds.dataM1, ds.dataM2);
+        legend('Location', 'northwest', 'FontSize', 8);
+    end
+end
+
+%% ===== Bounded ICM figure: 2 x 2 (dataset x method) =====
+figure(2);
+set(gcf, 'Color', 'w', 'Position', [100, 40, 1240, 900], ...
+    'Name', 'Microglia: naive GP vs Pensoneault lower-bound ICM MOGP');
+tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+for didx = 1:numel(results)
+    ds = results(didx);
+    methods = {ds.naive, ds.icm_bound};
+    method_titles = {'Naive GP (independent)', 'ICM MOGP (Pensoneault lower bound)'};
+
+    for midx = 1:2
+        nexttile;
+        ax = gca; ax.Layer = 'top';
+        hold on; grid on;
+        fit = methods{midx};
+        plot_phenotype(ax, tgrid, fit.M1, ds.timeM1, ds.dataM1, col_M1, k_plot, 'M1');
+        plot_phenotype(ax, tgrid, fit.M2, ds.timeM2, ds.dataM2, col_M2, k_plot, 'M2');
+        xlabel('Time (days)');
+        ylabel('cells/mm^2');
+        title(sprintf('%s — %s', ds.name, method_titles{midx}), 'Interpreter', 'none');
+        xlim([0, 14]);
         ylim_auto_from_fit(ax, fit.M1, fit.M2, ds.dataM1, ds.dataM2);
         legend('Location', 'northwest', 'FontSize', 8);
     end
@@ -282,6 +329,9 @@ switch lower(name)
 end
 end
 
+% converts 3 stored numbers (Cholesky factors) intot eh 2x2 matrix B that
+% controls M1/M2 coupling. Builds a lower-triangular L, exponentiates
+% diagonals, then B = L' * L (which is always positive semidefinite)
 function B = chol2cov(hyp)
 L = zeros(2);
 L(triu(true(2))) = hyp(:);
@@ -293,6 +343,7 @@ function rho = corr_from_B(B)
 rho = B(1, 2) / sqrt(max(B(1, 1) * B(2, 2), eps));
 end
 
+%Tells other functions how many hyperparameters the temporal kernel has
 function [nTemp, hasAlpha] = temporal_hyp_layout(covfunc)
 if iscell(covfunc) && strcmp(func2str(covfunc{1}), 'covMaterniso')
     nTemp = 2;
@@ -306,12 +357,19 @@ else
 end
 end
 
+%Assembles the coupled covariance: time kernel × discrete label kernel. 
+% Conceptually: cov(i,j) = B(label_i, label_j) × k(time_i, time_j)
 function covICM = build_icm_kernel(temporalKernel)
 covICM = {@covProd, { ...
     {@covMask, {1, temporalKernel}}, ...
     {@covMask, {2, {@covDiscrete, 2}}} }};
 end
 
+%Sets starting values and priors for the coupled model: 
+% Initial ell, fixed temporal sf (=1, clamped), initial B via Cholesky
+% Initial noise sn
+% Wraps inference in infPrior (Gaussian prior on ell, etc.)
+%Also runs one gp(...) call to validate the setup.
 function [hyp0, prior, inffunc] = init_icm_hyp(temporalKernel, x_aug, y_aug)
 meanfunc = @meanZero;
 likfunc  = @likGauss;
@@ -341,6 +399,14 @@ inffunc = {@infPrior, @infGaussLik, prior};
 gp(hyp0, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
 end
 
+%The full ICM multi-output GP on raw counts.
+% Steps: 
+%  1. Floor counts at 0; rescale M1 and M2 separately (mean/std).
+%  2. Stack inputs as [time, label] and standardized counts.
+%  3. build_icm_kernel + init_icm_hyp.
+%  4. minimize → learn ell, B, sn.
+%  5. Predict M1 and M2 on tgrid; convert back to count scale.
+%  6. pack_raw_fit for bands; build report (NLML, ell, B, rho, sn).
 function out = fit_icm_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
     temporalKernel, meanfunc, likfunc, max_iters, k_plot)
 
@@ -392,6 +458,191 @@ out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, t_impute, 'linear', 'extrap');
 %}
 end
 
+% ICM MOGP with Pensoneault lower bound at 0 on both M1 and M2 at X_c.
+% Fixes sigma_n from unconstrained ICM fit; optimizes ell (and alpha for RQ) + B via fmincon.
+function out = fit_icm_mogp_lower_bound(timeM1, dataM1, timeM2, dataM2, tgrid, ...
+    temporalKernel, meanfunc, likfunc, hyp_unc, X_c, k_pens, k_plot, ...
+    opts_pens, nTry, nMultistart, rng_seed)
+
+LABEL_M1 = 1;
+LABEL_M2 = 2;
+
+y_M1 = max(dataM1(:), 0);
+y_M2 = max(dataM2(:), 0);
+mu1 = mean(y_M1); sd1 = std(y_M1);
+mu2 = mean(y_M2); sd2 = std(y_M2);
+if sd1 < eps, sd1 = 1; end
+if sd2 < eps, sd2 = 1; end
+
+x_aug = [timeM1(:), LABEL_M1 * ones(numel(timeM1), 1); ...
+         timeM2(:), LABEL_M2 * ones(numel(timeM2), 1)];
+y_aug = [ (y_M1 - mu1) / sd1; (y_M2 - mu2) / sd2 ];
+
+covICM = build_icm_kernel(temporalKernel);
+[~, ~, inffunc] = init_icm_hyp(temporalKernel, x_aug, y_aug);
+
+[nTemp, hasAlpha] = temporal_hyp_layout(temporalKernel);
+[theta_unc, hyp_tpl] = icm_hyp_to_theta(hyp_unc, nTemp, hasAlpha);
+sn_fixed = hyp_unc.lik;
+hyp_tpl.lik = sn_fixed;
+
+ell_bounds_lo = 0.05;
+ell_ub = 14;
+chol_lo = -5;
+chol_hi = 5;
+if hasAlpha
+    hyp_lb = [log(ell_bounds_lo); log(0.01); chol_lo; chol_lo; chol_lo];
+    hyp_ub = [log(ell_ub); log(10); chol_hi; chol_hi; chol_hi];
+else
+    hyp_lb = [log(ell_bounds_lo); chol_lo; chol_lo; chol_lo];
+    hyp_ub = [log(ell_ub); chol_hi; chol_hi; chol_hi];
+end
+
+objfun = @(theta) gp(icm_theta_to_hyp(theta, hyp_tpl, nTemp, hasAlpha), ...
+    inffunc, meanfunc, covICM, likfunc, x_aug, y_aug);
+nonlcon = @(theta) pens_constraints_lower_icm(theta, hyp_tpl, inffunc, covICM, ...
+    meanfunc, likfunc, x_aug, y_aug, X_c, k_pens, mu1, sd1, mu2, sd2, nTemp, hasAlpha);
+
+theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
+
+fprintf('  Pensoneault ICM multistart: %d random starts\n', nTry);
+feasible_starts = zeros(numel(theta_unc), 0);
+best_feas_nlml = inf;
+best_feas_theta = nan(size(theta_unc));
+rng(rng_seed);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(size(theta_unc)) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = nonlcon(theta_try);
+    if max(c_try) <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = objfun(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+        end
+    end
+end
+nFeas = size(feasible_starts, 2);
+fprintf('  Feasible random starts: %d / %d\n', nFeas, nTry);
+
+if nFeas > 0
+    nlml_feas = arrayfun(@(j) objfun(feasible_starts(:, j)), 1:nFeas);
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+else
+    fprintf('  No feasible random start; using projected baseline theta.\n');
+    starts_for_fmincon = theta_unc_box;
+end
+starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
+starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
+
+best_nlml = inf;
+theta_opt = nan(size(theta_unc));
+nlml = nan;
+exitflag = -99;
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    [theta_j, nlml_j, ef_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts_pens);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml = nlml_j;
+        exitflag = ef_j;
+    end
+end
+if ~isfinite(best_nlml)
+    if nFeas > 0
+        theta_opt = best_feas_theta;
+    else
+        theta_opt = theta_unc_box;
+    end
+    nlml = objfun(theta_opt);
+    exitflag = -99;
+    fprintf('  Warning: no successful fmincon run; using fallback theta.\n');
+end
+
+hyp = icm_theta_to_hyp(theta_opt, hyp_tpl, nTemp, hasAlpha);
+[c_final, ~] = nonlcon(theta_opt);
+max_c = max(c_final);
+
+x_te_M1 = [tgrid, LABEL_M1 * ones(size(tgrid))];
+x_te_M2 = [tgrid, LABEL_M2 * ones(size(tgrid))];
+[~, ~, fmu1, fs21] = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug, x_te_M1);
+[~, ~, fmu2, fs22] = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug, x_te_M2);
+
+mu_y1 = mu1 + sd1 * fmu1(:);
+sf_y1 = sd1 * sqrt(max(fs21(:), 0));
+mu_y2 = mu2 + sd2 * fmu2(:);
+sf_y2 = sd2 * sqrt(max(fs22(:), 0));
+
+out.M1 = pack_raw_fit(mu_y1, sf_y1, k_plot);
+out.M2 = pack_raw_fit(mu_y2, sf_y2, k_plot);
+out.hyp = hyp;
+out.nlml = nlml;
+
+B = chol2cov(hyp.cov(nTemp + (1:3)));
+out.report.nlml = nlml;
+out.report.ell = exp(hyp.cov(1));
+out.report.B = B;
+out.report.rho = corr_from_B(B);
+out.report.sn = exp(hyp.lik);
+out.report.max_c = max_c;
+out.report.exitflag = exitflag;
+end
+
+function [theta, hyp_tpl] = icm_hyp_to_theta(hyp_unc, nTemp, hasAlpha)
+hyp_cov = hyp_unc.cov(:);
+chol_idx = nTemp + (1:3);
+if hasAlpha
+    theta = [hyp_cov(1); hyp_cov(3); hyp_cov(chol_idx)];
+else
+    theta = [hyp_cov(1); hyp_cov(chol_idx)];
+end
+hyp_tpl = struct('mean', [], 'cov', hyp_cov, 'lik', hyp_unc.lik);
+end
+
+function hyp = icm_theta_to_hyp(theta, hyp_tpl, nTemp, hasAlpha)
+hyp = hyp_tpl;
+hyp.mean = [];
+hyp_cov = hyp_tpl.cov(:);
+chol_idx = nTemp + (1:3);
+hyp_cov(1) = theta(1);
+if hasAlpha
+    hyp_cov(3) = theta(2);
+    hyp_cov(chol_idx) = theta(3:5);
+else
+    hyp_cov(chol_idx) = theta(2:4);
+end
+hyp.cov = hyp_cov;
+end
+
+function [c, ceq] = pens_constraints_lower_icm(theta, hyp_tpl, inffunc, covICM, ...
+    meanfunc, likfunc, x_aug, y_aug, X_c, k_pens, mu1, sd1, mu2, sd2, nTemp, hasAlpha)
+% Pensoneault lower bound at 0 in count units: mu - k*sigma >= 0  <=>  c <= 0.
+hyp = icm_theta_to_hyp(theta, hyp_tpl, nTemp, hasAlpha);
+
+LABEL_M1 = 1;
+LABEL_M2 = 2;
+nC = numel(X_c);
+x_te = [X_c(:), LABEL_M1 * ones(nC, 1); X_c(:), LABEL_M2 * ones(nC, 1)];
+
+[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covICM, likfunc, x_aug, y_aug, x_te);
+fmu1 = fmu(1:nC);
+fs21 = fs2(1:nC);
+fmu2 = fmu(nC+1:end);
+fs22 = fs2(nC+1:end);
+
+mu_count1 = mu1 + sd1 * fmu1(:);
+sf_count1 = sd1 * sqrt(max(fs21(:), 0));
+mu_count2 = mu2 + sd2 * fmu2(:);
+sf_count2 = sd2 * sqrt(max(fs22(:), 0));
+
+c = [k_pens .* sf_count1 - mu_count1; k_pens .* sf_count2 - mu_count2];
+ceq = [];
+end
+
+%Fits two separate GPs — one for M1, one for M2 — with no coupling.
 function out = fit_naive_gp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
     temporalKernel, meanfunc, likfunc, max_iters, k_plot)
 
@@ -420,6 +671,9 @@ out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, 5, 'linear', 'extrap');
 %}
 end
 
+% Fits one scalar GP on time → count:
+%  Initializes ell, sf, sn
+%  minimize + predict on tgrid
 function fit = fit_single_gp(x, y, tgrid, temporalKernel, meanfunc, likfunc, max_iters)
 x = x(:); y = y(:);
 inffunc = @infGaussLik;
@@ -447,6 +701,7 @@ fit.mu_y = fmu(:);
 fit.sf_y = sqrt(max(fs2(:), 0));
 end
 
+% Packages predictions into a small struct for plotting:
 function pheno = pack_raw_fit(mu, sf, k_plot)
 pheno.mu = mu(:);
 pheno.sf = sf(:);
@@ -470,6 +725,15 @@ fprintf('\n  M2 at t=5: mean=%.2f, sd=%.4f\n', report.M2_at_t, report.M2_at_t_sd
 fprintf('\n');
 end
 
+function report_fit_bounded(dataset_name, method_name, report)
+fprintf('[%s | %s] NLML=%.4f', dataset_name, method_name, report.nlml);
+fprintf(', ell=%.4f, rho=%.4f, sn=%.4f', report.ell, report.rho, report.sn);
+fprintf(', exitflag=%d, max(c)=%.4g', report.exitflag, report.max_c);
+fprintf('\n  B = [%.4f %.4f; %.4f %.4f]', ...
+    report.B(1,1), report.B(1,2), report.B(2,1), report.B(2,2));
+fprintf('\n');
+end
+
 function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, ~, name)
 tg = tgrid(:)';
 lo = fit.lo(:)';
@@ -485,6 +749,7 @@ scatter(ax, t_data, y_data, 36, 'filled', ...
     'DisplayName', sprintf('%s data', name));
 end
 
+%  Sets y-axis limits from all means, bands, and data (with 5% padding). Allows negative values to show.
 function ylim_auto_from_fit(ax, fitM1, fitM2, dataM1, dataM2)
 vals = [fitM1.lo(:); fitM1.hi(:); fitM1.mu(:); ...
         fitM2.lo(:); fitM2.hi(:); fitM2.mu(:); ...
@@ -504,6 +769,7 @@ function M = log_to_count(z, count_delta)
 M = count_delta .* expm1(z(:));
 end
 
+% Coupled fit on log-transformed counts
 function out = fit_icm_mogp_log(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
     temporalKernel, meanfunc, likfunc, max_iters, t_impute, k_plot)
 
@@ -554,6 +820,7 @@ out.report.M2_at_t = interp1(tgrid, out.M2.mu, t_impute, 'linear', 'extrap');
 out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, t_impute, 'linear', 'extrap');
 end
 
+% Independent log-GP baseline
 function out = fit_naive_log_gp(timeM1, dataM1, timeM2, dataM2, count_delta, tgrid, ...
     temporalKernel, meanfunc, likfunc, max_iters, k_plot)
 
@@ -581,6 +848,7 @@ out.report.M2_at_t = interp1(tgrid, out.M2.mu, 5, 'linear', 'extrap');
 out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, 5, 'linear', 'extrap');
 end
 
+% One log-GP (like fit_single_gp but on z)
 function fit = fit_single_log_gp(x, z, tgrid, temporalKernel, meanfunc, likfunc, max_iters)
 x = x(:); z = z(:);
 inffunc = @infGaussLik;
@@ -608,6 +876,7 @@ fit.mu_z = fmu(:);
 fit.sf_z = sqrt(max(fs2(:), 0));
 end
 
+%Back-transform predictions to count scale; clamps lo at 0
 function pheno = pack_count_fit(mu_z, sf_z, count_delta, k_plot)
 pheno.mu_z = mu_z(:);
 pheno.sf_z = sf_z(:);
@@ -617,6 +886,7 @@ pheno.lo = max(0, log_to_count(mu_z - k_plot .* sf_z, count_delta));
 pheno.hi = log_to_count(mu_z + k_plot .* sf_z, count_delta);
 end
 
+% Console reporting for log path (includes M2@day5)
 function report_fit_log(dataset_name, method_name, report)
 fprintf('[%s | %s] count_delta=%.4g, NLML=%.4f', ...
     dataset_name, method_name, report.count_delta, report.nlml);
