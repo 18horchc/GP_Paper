@@ -25,7 +25,7 @@ close all; clc;
 %% ===== Configuration =====
 kernel_name       = 'se';  % 'matern32' | 'matern52' | 'se' | 'rq'
 k_plot            = 1.96;        % ~95% band multiplier
-% Pensoneault lower-bound (Figure 2 ICM panels)
+% Pensoneault lower-bound (Figures 2-3)
 eta_pens          = 0.022;       % 2.2% tail probability
 k_pens            = -sqrt(2) * erfinv(2 * eta_pens - 1);
 n_constraint      = 41;
@@ -151,6 +151,9 @@ for didx = 1:numel(datasets)
 
     naive = fit_naive_gp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
+    naive_bound = fit_naive_gp_lower_bound(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
+        naive.hyp_M1, naive.hyp_M2, tgrid, temporalKernel, meanfunc, likfunc, ...
+        X_c, k_pens, k_plot, opts_pens, nTry_pens, nMultistart_pens, 50 + 2*didx, 51 + 2*didx);
     icm = fit_icm_mogp(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
         tgrid, temporalKernel, meanfunc, likfunc, max_iters, k_plot);
     icm_bound = fit_icm_mogp_lower_bound(ds.timeM1, ds.dataM1, ds.timeM2, ds.dataM2, ...
@@ -166,6 +169,7 @@ for didx = 1:numel(datasets)
 
     results(didx).name = ds.name;
     results(didx).naive = naive;
+    results(didx).naive_bound = naive_bound;
     results(didx).icm = icm;
     results(didx).icm_bound = icm_bound;
     results(didx).timeM1 = ds.timeM1;
@@ -174,6 +178,7 @@ for didx = 1:numel(datasets)
     results(didx).dataM2 = ds.dataM2;
 
     report_fit(ds.name, 'Naive GP (independent)', naive.report);
+    report_fit_naive_bounded(ds.name, 'Naive GP (Pensoneault lower bound)', naive_bound.report);
     report_fit(ds.name, 'ICM MOGP (coupled)', icm.report);
     report_fit_bounded(ds.name, 'ICM MOGP (Pensoneault lower bound)', icm_bound.report);
     %{
@@ -228,6 +233,33 @@ for didx = 1:numel(results)
     ds = results(didx);
     methods = {ds.naive, ds.icm_bound};
     method_titles = {'Naive GP (independent)', 'ICM MOGP (Pensoneault lower bound)'};
+
+    for midx = 1:2
+        nexttile;
+        ax = gca; ax.Layer = 'top';
+        hold on; grid on;
+        fit = methods{midx};
+        plot_phenotype(ax, tgrid, fit.M1, ds.timeM1, ds.dataM1, col_M1, k_plot, 'M1');
+        plot_phenotype(ax, tgrid, fit.M2, ds.timeM2, ds.dataM2, col_M2, k_plot, 'M2');
+        xlabel('Time (days)');
+        ylabel('cells/mm^2');
+        title(sprintf('%s — %s', ds.name, method_titles{midx}), 'Interpreter', 'none');
+        xlim([0, 14]);
+        ylim_auto_from_fit(ax, fit.M1, fit.M2, ds.dataM1, ds.dataM2);
+        legend('Location', 'northwest', 'FontSize', 8);
+    end
+end
+
+%% ===== Bounded naive + ICM figure: 2 x 2 (dataset x method) =====
+figure(3);
+set(gcf, 'Color', 'w', 'Position', [140, 20, 1240, 900], ...
+    'Name', 'Microglia: Pensoneault lower-bound naive GP vs ICM MOGP');
+tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+for didx = 1:numel(results)
+    ds = results(didx);
+    methods = {ds.naive_bound, ds.icm_bound};
+    method_titles = {'Naive GP (Pensoneault lower bound)', 'ICM MOGP (Pensoneault lower bound)'};
 
     for midx = 1:2
         nexttile;
@@ -671,6 +703,174 @@ out.report.M2_at_t_sd = interp1(tgrid, out.M2.sf, 5, 'linear', 'extrap');
 %}
 end
 
+% Independent naive GPs with Pensoneault lower bound at 0 on M1 and M2 separately.
+function out = fit_naive_gp_lower_bound(timeM1, dataM1, timeM2, dataM2, ...
+    hyp_unc_M1, hyp_unc_M2, tgrid, temporalKernel, meanfunc, likfunc, ...
+    X_c, k_pens, k_plot, opts_pens, nTry, nMultistart, rng_seed_M1, rng_seed_M2)
+
+inffunc = @infGaussLik;
+y_M1 = max(dataM1(:), 0);
+y_M2 = max(dataM2(:), 0);
+
+ell_bounds_lo = 0.05;
+ell_ub = 14;
+sf_bounds_M1 = [0.05, max(15, 1.5 * std(y_M1))];
+sf_bounds_M2 = [0.05, max(15, 1.5 * std(y_M2))];
+
+[~, hasAlpha] = temporal_hyp_layout(temporalKernel);
+if hasAlpha
+    hyp_lb_M1 = log([ell_bounds_lo; sf_bounds_M1(1); 0.01]);
+    hyp_ub_M1 = log([ell_ub; sf_bounds_M1(2); 10]);
+    hyp_lb_M2 = log([ell_bounds_lo; sf_bounds_M2(1); 0.01]);
+    hyp_ub_M2 = log([ell_ub; sf_bounds_M2(2); 10]);
+else
+    hyp_lb_M1 = log([ell_bounds_lo; sf_bounds_M1(1)]);
+    hyp_ub_M1 = log([ell_ub; sf_bounds_M1(2)]);
+    hyp_lb_M2 = log([ell_bounds_lo; sf_bounds_M2(1)]);
+    hyp_ub_M2 = log([ell_ub; sf_bounds_M2(2)]);
+end
+
+fprintf('  Pensoneault naive GP (M1) multistart: %d random starts\n', nTry);
+[fit1.hyp, fit1.mu_y, fit1.sf_y, fit1.nlml, fit1.exitflag, fit1.max_c] = ...
+    fit_scalar_gp_lower_bound(timeM1(:), y_M1, hyp_unc_M1, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, temporalKernel, likfunc, hyp_lb_M1, hyp_ub_M1, ...
+    opts_pens, nTry, nMultistart, rng_seed_M1, false);
+
+fprintf('  Pensoneault naive GP (M2) multistart: %d random starts\n', nTry);
+[fit2.hyp, fit2.mu_y, fit2.sf_y, fit2.nlml, fit2.exitflag, fit2.max_c] = ...
+    fit_scalar_gp_lower_bound(timeM2(:), y_M2, hyp_unc_M2, X_c, k_pens, tgrid, ...
+    inffunc, meanfunc, temporalKernel, likfunc, hyp_lb_M2, hyp_ub_M2, ...
+    opts_pens, nTry, nMultistart, rng_seed_M2, false);
+
+out.M1 = pack_raw_fit(fit1.mu_y, fit1.sf_y, k_plot);
+out.M2 = pack_raw_fit(fit2.mu_y, fit2.sf_y, k_plot);
+out.hyp_M1 = fit1.hyp;
+out.hyp_M2 = fit2.hyp;
+out.nlml = fit1.nlml + fit2.nlml;
+
+out.report.nlml = out.nlml;
+out.report.ell_M1 = exp(fit1.hyp.cov(1));
+out.report.ell_M2 = exp(fit2.hyp.cov(1));
+out.report.sn_M1 = exp(fit1.hyp.lik);
+out.report.sn_M2 = exp(fit2.hyp.lik);
+out.report.max_c_M1 = fit1.max_c;
+out.report.max_c_M2 = fit2.max_c;
+out.report.exitflag_M1 = fit1.exitflag;
+out.report.exitflag_M2 = fit2.exitflag;
+out.report.B = [];
+out.report.rho = NaN;
+end
+
+function [hyp, mu_y, sf_y, nlml, exitflag, max_c] = fit_scalar_gp_lower_bound( ...
+    x, y, hyp_unc, X_c, k_pens, tgrid, inffunc, meanfunc, covfunc, likfunc, ...
+    hyp_lb, hyp_ub, opts, nTry, nMultistart, rng_seed, verbose)
+% Pensoneault lower-bound scalar GP: minimize NLML subject to mu_f - k*sigma_f >= 0 at X_c.
+if nargin < 17
+    verbose = true;
+end
+x = x(:); y = y(:);
+tgrid = tgrid(:);
+
+sn_fixed = hyp_unc.lik;
+hyp_tpl = struct('mean', [], 'cov', hyp_unc.cov(:), 'lik', sn_fixed);
+theta_unc = hyp_unc.cov(:);
+nTheta = numel(theta_unc);
+
+objfun = @(theta) gp(scalar_theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x, y);
+nonlcon = @(theta) pens_constraints_lower_scalar(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k_pens);
+
+theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
+if verbose
+    fprintf('    Multistart: %d random starts\n', nTry);
+end
+feasible_starts = zeros(nTheta, 0);
+best_feas_nlml = inf;
+best_feas_theta = nan(nTheta, 1);
+rng(rng_seed);
+for t = 1:nTry
+    theta_try = hyp_lb + rand(nTheta, 1) .* (hyp_ub - hyp_lb);
+    [c_try, ~] = nonlcon(theta_try);
+    if max(c_try) <= 0
+        feasible_starts = [feasible_starts, theta_try];
+        nlml_try = objfun(theta_try);
+        if nlml_try < best_feas_nlml
+            best_feas_nlml = nlml_try;
+            best_feas_theta = theta_try;
+        end
+    end
+end
+nFeas = size(feasible_starts, 2);
+if verbose
+    fprintf('    Feasible random starts: %d / %d\n', nFeas, nTry);
+end
+if nFeas > 0
+    nlml_feas = arrayfun(@(j) objfun(feasible_starts(:, j)), 1:nFeas);
+    [~, ord] = sort(nlml_feas, 'ascend');
+    starts_for_fmincon = feasible_starts(:, ord(1:min(nMultistart, nFeas)));
+else
+    if verbose
+        fprintf('    No feasible random start; using projected baseline theta.\n');
+    end
+    starts_for_fmincon = theta_unc_box;
+end
+starts_for_fmincon = [theta_unc_box, starts_for_fmincon];
+starts_for_fmincon = starts_for_fmincon(:, 1:min(nMultistart + 1, size(starts_for_fmincon, 2)));
+
+best_nlml = inf;
+theta_opt = nan(nTheta, 1);
+nlml = nan;
+exitflag = -99;
+nStarts = size(starts_for_fmincon, 2);
+for j = 1:nStarts
+    theta0_j = starts_for_fmincon(:, j);
+    [theta_j, nlml_j, ef_j] = fmincon(objfun, theta0_j, [], [], [], [], hyp_lb, hyp_ub, nonlcon, opts);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+        nlml = nlml_j;
+        exitflag = ef_j;
+    end
+end
+if ~isfinite(best_nlml)
+    if nFeas > 0
+        theta_opt = best_feas_theta;
+    else
+        theta_opt = theta_unc_box;
+    end
+    nlml = objfun(theta_opt);
+    exitflag = -99;
+    if verbose
+        fprintf('    Warning: no successful fmincon run; using fallback theta.\n');
+    end
+end
+
+hyp = scalar_theta_to_hyp(theta_opt, hyp_tpl);
+[c_final, ~] = nonlcon(theta_opt);
+max_c = max(c_final);
+
+[~, ~, mu_y, s2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, tgrid);
+mu_y = mu_y(:);
+sf_y = sqrt(max(s2(:), 0));
+end
+
+function hyp = scalar_theta_to_hyp(theta, hyp_tpl)
+hyp = hyp_tpl;
+hyp.cov = theta(:);
+hyp.mean = [];
+end
+
+function [c, ceq] = pens_constraints_lower_scalar(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k_pens)
+% Pensoneault lower bound at 0 on latent f: mu_f - k*sigma_f >= 0  <=>  c <= 0.
+hyp = scalar_theta_to_hyp(theta, hyp_tpl);
+[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
+m_xc = fmu(:);
+s_xc = sqrt(max(fs2(:), 0));
+c = k_pens .* s_xc - m_xc;
+ceq = [];
+end
+
 % Fits one scalar GP on time → count:
 %  Initializes ell, sf, sn
 %  minimize + predict on tgrid
@@ -732,6 +932,14 @@ fprintf(', exitflag=%d, max(c)=%.4g', report.exitflag, report.max_c);
 fprintf('\n  B = [%.4f %.4f; %.4f %.4f]', ...
     report.B(1,1), report.B(1,2), report.B(2,1), report.B(2,2));
 fprintf('\n');
+end
+
+function report_fit_naive_bounded(dataset_name, method_name, report)
+fprintf('[%s | %s] NLML=%.4f', dataset_name, method_name, report.nlml);
+fprintf(', ell_M1=%.4f, ell_M2=%.4f, sn_M1=%.4f, sn_M2=%.4f', ...
+    report.ell_M1, report.ell_M2, report.sn_M1, report.sn_M2);
+fprintf('\n  M1: exitflag=%d, max(c)=%.4g | M2: exitflag=%d, max(c)=%.4g\n', ...
+    report.exitflag_M1, report.max_c_M1, report.exitflag_M2, report.max_c_M2);
 end
 
 function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, ~, name)
