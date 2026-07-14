@@ -1,7 +1,6 @@
-% Paper figure: Michaelis-Menten GP with probabilistic upper-bound constraint.
-% Reproduces commit bfe9e27 (Pensoneault upper-bound paper draft):
-%   baseline bounded GP vs fmincon fit with mu_f(x_c)+k*sigma_f(x_c) <= Vmax at 41 grid points
-%   % and data-fidelity tube |y - y*(x)| <= epsilon at training locations.
+% Paper figure: Michaelis-Menten GP with Pensoneault lower-bound constraint.
+% Baseline SE-GP vs fmincon fit with mu_f(x_c) - k*sigma_f(x_c) >= 0 at 41 grid points
+% % and data-fidelity tube |y - y*(x)| <= epsilon at training locations.
 % eta = 2.2%% => k from erfinv; % epsilon = 0.5.
 clear; clc; close all;
 
@@ -13,9 +12,8 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 %% Training data ([S] in mM, v_0 in μM/s)
 x_max = 2;
 noise_frac = 0.1;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
-%x_train = [0.0; 0.1; 0.2; 0.3; 0.4; 0.5; 0.6; 0.7; 0.8; 1.8; 1.9; 2.0];
-x_train = [0.0;0.2;0.4;0.6;0.8;2.0]; 
-%x_train = [0.0;0.15;0.3;0.8; 1.8;2];
+x_train = [0.0;0.2;0.4;0.6;0.8;2.0]; %crazy behavior
+n_train = numel(x_train);
 
 rng(100);
 v_true_at_train = mm_static(x_train);
@@ -23,7 +21,7 @@ y_domain_max = mm_static(x_max);
 noise_sd_true = noise_frac * y_domain_max;
 y_train = v_true_at_train + noise_sd_true * randn(size(v_true_at_train));
 fprintf('Synthetic data: n=%d on [0, %.1f], homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n', ...
-    numel(x_train), x_max, noise_sd_true, 100 * noise_frac);
+    n_train, x_max, noise_sd_true, 100 * noise_frac);
 
 x_obs = x_train(:);
 y_obs = y_train(:);
@@ -32,12 +30,11 @@ y_obs = y_train(:);
 x_grid = linspace(0, x_max, 500);
 y_true = mm_static(x_grid);
 
-%% Pensoneault upper-bound constraint grid at X_c
+%% Pensoneault lower-bound constraint grid at X_c
 eta = 0.022;   % 2.2% tail probability
 k   = -sqrt(2) * erfinv(2 * eta - 1);
 n_constraint = 41;
 X_c = linspace(0, x_max, n_constraint)';
-y_max = Vmax;
 % epsilon = 0.5;   % data fidelity: |y - y*(x)| <= epsilon
 
 %% GPML setup
@@ -80,16 +77,16 @@ hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
 nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
 theta_unc = hyp_unc.cov(:);
 
-%% Pensoneault-constrained GP (upper bound; sigma_n fixed)
-% %% Pensoneault-constrained GP (upper bound + data fidelity; sigma_n fixed)
+%% Pensoneault-constrained GP (lower bound at 0; sigma_n fixed)
+% %% Pensoneault-constrained GP (lower bound at 0 + data fidelity; sigma_n fixed)
 hyp_lb = log([ell_bounds_lo; sf_bounds(1)]);
 hyp_ub = log([ell_ub; sf_bounds(2)]);
 hyp_tpl = hyp_unc;
 objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-nonlcon = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x_col, y_col, X_c, k, y_max);
-% nonlcon = @(theta) pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-%     x_col, y_col, X_c, k, y_max, epsilon);
+nonlcon = @(theta) pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x_col, y_col, X_c, k);
+% nonlcon = @(theta) pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+%     x_col, y_col, X_c, k, epsilon);
 opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, 'Display', 'off', ...
     'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
@@ -98,8 +95,8 @@ nTry = 2000;
 nMultistart = 10;
 theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
 
-fprintf('\n=== Pensoneault GP (upper bound) ===\n');
-% fprintf('\n=== Pensoneault GP (upper bound + data fidelity, epsilon = %.4g) ===\n', epsilon);
+fprintf('\n=== Pensoneault GP (lower bound at 0) ===\n');
+% fprintf('\n=== Pensoneault GP (lower bound at 0 + data fidelity, epsilon = %.4g) ===\n', epsilon);
 fprintf('eta = %.3g%% | k = %.4f | X_c: %d points | random starts: %d\n', ...
     100 * eta, k, numel(X_c), nTry);
 
@@ -164,11 +161,11 @@ hyp_con = theta_to_hyp(theta_opt, hyp_tpl);
 [c_final, ~] = nonlcon(theta_opt);
 % nC = numel(X_c);
 fprintf('Final max(c) = %.6g (feasible if <= 0)\n', max(c_final));
-fprintf('  upper max(c) = %.6g\n', max(c_final));
-% fprintf('  upper max(c) = %.6g | data max(c) = %.6g\n', ...
+fprintf('  lower max(c) = %.6g\n', max(c_final));
+% fprintf('  lower max(c) = %.6g | data max(c) = %.6g\n', ...
 %     max(c_final(1:nC)), max(c_final(nC+1:end)));
 
-%% Plot baseline vs upper-bound GP
+%% Plot baseline vs lower-bound GP
 k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
@@ -179,14 +176,14 @@ m_con = fmu_con(:);
 sf_con = sqrt(max(fs2_con(:), 0));
 
 band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
-ylim_shared = [-0.5, max([y_train(:); Vmax; m_unc + k_plot * sf_unc; m_con + k_plot * sf_con]) * 1.02];
+ylim_shared = [-1, max([y_train(:); Vmax; m_unc + k_plot * sf_unc; m_con + k_plot * sf_con]) * 1.02];
 
 figure('Color', 'w', 'Position', [80, 80, 1100, 520], ...
-    'Name', 'Michaelis-Menten GP: upper bound');
+    'Name', 'Michaelis-Menten GP: lower bound');
 tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 panels(1) = struct('m', m_unc, 'sf', sf_unc, 'title', 'Baseline GP');
-panels(2) = struct('m', m_con, 'sf', sf_con, 'title', 'Upper-bound GP');
+panels(2) = struct('m', m_con, 'sf', sf_con, 'title', 'Lower-bound GP');
 
 for p = 1:2
     nexttile;
@@ -201,6 +198,7 @@ for p = 1:2
     plot(x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
     plot(x_obs, y_obs, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
         'DisplayName', 'Observed data');
+    yline(0, 'k:', 'v_0 = 0', 'Alpha', 0.5);
     yline(Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
     xlabel('[S] (mM)');
     ylabel('v_0 (\muM/s)');
@@ -215,25 +213,21 @@ fprintf('\nBaseline:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
 fprintf('Pensoneault:   ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(hyp_con.cov(1)), exp(hyp_con.cov(2)), exp(hyp_con.lik), nlml_con, exitflag_con, max(c_final));
 
-% helper so that theta can be used by gp() function
 function hyp = theta_to_hyp(theta, hyp_tpl)
 hyp = hyp_tpl;
 hyp.cov = theta(1:2);
 hyp.mean = [];
 end
 
-%helper for fmincon. 
-% Must be nonlinear constraints in the form c(theta) <= 0
-% For a candidate hyperparameter vector theta, it runs the GP posterior at 
-% the grid points and the training points in one call:
-function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k, y_max)
-% function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-%     x, y, X_c, k, y_max, epsilon)
-% Pensoneault-style constraints: upper bound on latent f at X_c.
-% % Pensoneault-style constraints: upper bound on latent f at X_c; data fidelity tube.
+function [c, ceq] = pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+    x, y, X_c, k)
+% function [c, ceq] = pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
+%     x, y, X_c, k, epsilon)
+% Pensoneault-style constraints: lower bound on latent f at X_c.
+% % Pensoneault-style constraints: lower bound on latent f at X_c; data fidelity tube.
+% mu_f - k*sigma_f >= 0  <=>  c <= 0
 hyp = theta_to_hyp(theta, hyp_tpl);
-nC = numel(X_c);
+% nC = numel(X_c);
 % xstar = [X_c(:); x(:)];
 % [ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
 % m_xc = fmu(1:nC);
@@ -241,10 +235,10 @@ nC = numel(X_c);
 [~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
 m_xc = fmu(:);
 s_xc = sqrt(max(fs2(:), 0));
-c_upper = m_xc + k .* s_xc - y_max; %upper bound constraint
+c_lower = k .* s_xc - m_xc;
 % y_star = ymu(nC+1:end);
-% c_data = abs(y - y_star) - epsilon; %data fidelity constraint
-% c = [c_upper; c_data(:)];
-c = c_upper;
+% c_data = abs(y - y_star) - epsilon;
+% c = [c_lower; c_data(:)];
+c = c_lower;
 ceq = [];
 end
