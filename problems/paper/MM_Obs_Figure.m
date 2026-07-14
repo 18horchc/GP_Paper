@@ -1,7 +1,7 @@
 % Paper figure: Michaelis-Menten GP — baseline SE vs virtual anchors / deriv obs.
-% Dataset: [S] = [0.08, 0.2, 0.3, 0.5, 0.8, 1.8] with 5% homoscedastic noise.
+% Dataset: [S] = [0.08, 0.2, 0.3, 0.5, 0.8, 1.8] with 10% homoscedastic noise.
 % Tab 1: unconstrained SE-GP.
-% Tab 2: virtual function-value anchors at S=0 and S=2 (same sn as data).
+% Tab 2: virtual function-value anchors (same homoscedastic sn as data).
 % Tab 3: Solak virtual derivative obs on unaugmented data (sn_deriv = sn).
 % Tab 4: virtual function-value anchors + Solak deriv obs together.
 clear; clc; close all;
@@ -13,8 +13,8 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 %% Training data ([S] in mM, v_0 in μM/s)
 x_max = 2;
-noise_frac = 0.1;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
-x_train = [0.08; 0.2; 0.3; 0.5; 0.8; 2];
+noise_frac = 0.05;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
+x_train = [0.1; 0.3; 0.6; 0.9; 2];
 n_train = numel(x_train);
 
 rng(100);
@@ -29,27 +29,26 @@ fprintf('Synthetic data: n=%d at [0.08,0.2,0.3,0.5,0.8,1.8], homoscedastic noise
 x_obs = x_train(:);
 y_obs = y_train(:);
 
-S_high = x_max;
 x_virt_zero = 0;
 y_virt_zero = 0;
-x_virt_sat = 1.5;
-y_virt_sat = 5.5;
+x_virt_sat = 1.4;
+y_virt_sat = 5.3;
 
 x_aug = [x_obs; x_virt_zero; x_virt_sat];
 y_aug = [y_obs; y_virt_zero; y_virt_sat];
 
 fprintf('Virtual obs: v(0)=0 | v(%.1f)=%.1f | shared sn=%.4f (homoscedastic)\n', ...
-    S_high, Vmax, noise_sd_true);
+    x_virt_sat, y_virt_sat, noise_sd_true);
 
 %% Virtual derivative observations (Solak; sn_deriv = noise_sd_true)
 %x_deriv = linspace(0, 2, 10)';          % 0, 2/9, ..., 2
 %y_deriv = (27:-3:0)';                   % 27, ..., 0
 
-x_deriv = [1; 1.2; 1.4; 1.6; 1.8];
+x_deriv = [1; 1.4; 1.8];
 y_deriv = 0.3 * ones(numel(x_deriv), 1);
 
 sn_deriv = noise_sd_true;
-fprintf('Virtual deriv obs: %d sites on [0, 2] | y=30:-3:3 | sn_deriv=%.4f\n', ...
+fprintf('Virtual deriv obs: %d sites | y_deriv=0.3 | sn_deriv=%.4f\n', ...
     numel(x_deriv), sn_deriv);
 
 %% Ground truth curve
@@ -108,7 +107,7 @@ hyp_cov_deriv = minimize(hyp.cov, obj_deriv, -100);
 hyp_deriv = struct('mean', [], 'cov', hyp_cov_deriv(:), 'lik', sn_fixed);
 nlml_deriv = obj_deriv(hyp_cov_deriv);
 
-%% Combined: virtual function-value anchors + Solak deriv obs
+%% Combined: virtual function-value anchors + Solak deriv obs (homoscedastic)
 fprintf('\nOptimizing VO+deriv GP (ell, sf; sigma_n fixed at %.4f, sn_deriv=%.4f)...\n', ...
     noise_sd_true, sn_deriv);
 obj_both = @(hyp_cov) gp_seiso_deriv_obs_nlml_cov_only( ...
@@ -185,7 +184,7 @@ fprintf('Augmented:     ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f (homoscedastic, n
     exp(hyp_aug.cov(1)), exp(hyp_aug.cov(2)), exp(hyp_aug.lik), nlml_aug, numel(y_aug));
 fprintf('Deriv obs:     ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f\n', ...
     exp(hyp_deriv.cov(1)), exp(hyp_deriv.cov(2)), exp(hyp_deriv.lik), sn_deriv, nlml_deriv);
-fprintf('VO+deriv:      ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f (n_aug=%d)\n', ...
+fprintf('VO+deriv:      ell=%.4f, sf=%.4f, sn=%.4f, sn_deriv=%.4f | NLML=%.4f (homoscedastic, n_aug=%d)\n', ...
     exp(hyp_both.cov(1)), exp(hyp_both.cov(2)), exp(hyp_both.lik), sn_deriv, nlml_both, numel(y_aug));
 fprintf('\nPosterior f'' at Solak derivative observation points (sn_deriv = %.3g):\n', sn_deriv);
 fprintf('  [S]    target    post mean    post sd    MM analytic\n');

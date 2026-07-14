@@ -1,41 +1,49 @@
-function varargout = gp_seiso_deriv_obs(mode, hyp, x, y, x_d, y_d, xs, sn_deriv, fix_sn_obs)
+function varargout = gp_seiso_deriv_obs(mode, hyp, x, y, x_d, y_d, xs, sn_deriv, fix_sn_obs, noise_var)
 %GP_SEISO_DERIV_OBS Solak-style GP with function + derivative observations (SE-iso).
 %   nlml = gp_seiso_deriv_obs('nlml', hyp, x, y, x_d, y_d, [], sn_deriv)
 %   nlml = gp_seiso_deriv_obs('nlml', hyp, x, y, x_d, y_d, [], sn_deriv, true)
 %       with fix_sn_obs true, hyp.lik is fixed and NLML gradients are w.r.t. hyp.cov only.
 %   [ymu, ys2, fmu, fs2] = gp_seiso_deriv_obs('pred', hyp, x, y, x_d, y_d, xs, sn_deriv)
 %   [m_deriv, s2_deriv] = gp_seiso_deriv_obs('deriv', hyp, x, y, x_d, y_d, xs, sn_deriv)
+%   Optional noise_var (n_x x 1 variances) overrides homoscedastic function-obs noise from hyp.lik.
 
 if nargin < 9
     fix_sn_obs = false;
 end
+if nargin < 10
+    noise_var = [];
+end
 
 switch lower(mode)
     case 'nlml'
-        [varargout{1:nargout}] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs);
+        [varargout{1:nargout}] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs, noise_var);
     case 'pred'
         [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = ...
-            pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv);
+            pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var);
     case 'deriv'
-        [varargout{1}, varargout{2}] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv);
+        [varargout{1}, varargout{2}] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var);
     otherwise
         error('gp_seiso_deriv_obs:UnknownMode', 'Unknown mode: %s', mode);
 end
 end
 
-function [nlml, dnll] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs)
+function [nlml, dnll] = nlml_core(hyp, x, y, x_d, y_d, sn_deriv, fix_sn_obs, noise_var)
 if nargin < 7
     fix_sn_obs = false;
 end
-[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv);
+if nargin < 8
+    noise_var = [];
+end
+[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
 nlml = 0.5 * (z' * alpha) + sum(log(diag(L))) + 0.5 * nTot * log(2 * pi);
 
 if nargout > 1
     nCov = 2;
-    if fix_sn_obs
+    if fix_sn_obs || ~isempty(noise_var)
         p = hyp.cov(:);
+        fix_sn_obs = true;
     else
         p = [hyp.cov(:); hyp.lik(:)];
     end
@@ -48,13 +56,13 @@ if nargout > 1
         else
             hp.lik(1) = hp.lik(1) + step;
         end
-        nlml_p = nlml_value(hp, x, y, x_d, y_d, sn_deriv);
+        nlml_p = nlml_value(hp, x, y, x_d, y_d, sn_deriv, noise_var);
         if i <= nCov
             hp.cov(i) = hp.cov(i) - 2 * step;
         else
             hp.lik(1) = hp.lik(1) - 2 * step;
         end
-        nlml_m = nlml_value(hp, x, y, x_d, y_d, sn_deriv);
+        nlml_m = nlml_value(hp, x, y, x_d, y_d, sn_deriv, noise_var);
         dnll_vec(i) = (nlml_p - nlml_m) / (2 * step);
     end
     dnll = hyp;
@@ -68,17 +76,17 @@ if nargout > 1
 end
 end
 
-function nlml = nlml_value(hyp, x, y, x_d, y_d, sn_deriv)
-[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv);
+function nlml = nlml_value(hyp, x, y, x_d, y_d, sn_deriv, noise_var)
+[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
 nlml = 0.5 * (z' * alpha) + sum(log(diag(L))) + 0.5 * nTot * log(2 * pi);
 end
 
-function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv)
-[Ky, z, ~, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv);
+function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
+[Ky, z, ~, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 x = x(:); x_d = x_d(:); xs = xs(:);
-n = numel(x); m = numel(x_d); nS = numel(xs);
+nS = numel(xs);
 
 L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
@@ -97,8 +105,8 @@ ymu = fmu;
 ys2 = fs2 + sn2;
 end
 
-function [m_deriv, s2_deriv] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv)
-[Ky, z, ~, ell, sf2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv);
+function [m_deriv, s2_deriv] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
+[Ky, z, ~, ell, sf2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 x = x(:); x_d = x_d(:); xs = xs(:);
 nS = numel(xs);
 
@@ -118,7 +126,10 @@ s2_deriv = s2_deriv(:);
 end
 
 
-function [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv)
+function [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var)
+if nargin < 7
+    noise_var = [];
+end
 x = x(:); y = y(:); x_d = x_d(:); y_d = y_d(:);
 n = numel(x); m = numel(x_d);
 nTot = n + m;
@@ -136,7 +147,16 @@ K_df = seiso_Kdf(x_d, x, ell, sf2);
 K_dd = seiso_Kdd(x_d, x_d, ell, sf2);
 
 K_aug = [K_ff, K_fd; K_df, K_dd];
-noise = [sn2 * ones(n, 1); sn_deriv2 * ones(m, 1)];
+if isempty(noise_var)
+    sn_obs = sn2 * ones(n, 1);
+else
+    sn_obs = noise_var(:);
+    if numel(sn_obs) ~= n
+        error('gp_seiso_deriv_obs:BadNoiseVar', ...
+            'noise_var must have length numel(x)=%d, got %d.', n, numel(sn_obs));
+    end
+end
+noise = [sn_obs; sn_deriv2 * ones(m, 1)];
 Ky = K_aug + diag(noise + jitter); %jitter for numerical stability
 z = [y; y_d];
 end
