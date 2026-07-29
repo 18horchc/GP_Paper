@@ -1,9 +1,11 @@
 % microglia_lmc_mogp.m — Two-output Linear Model of Coregionalization (LMC) for M1/M2.
 %
-% Joint GP on raw microglia counts with LMC covariance (GPML composed kernel):
+% Joint GP on log1p-transformed microglia counts (shared response scale, no per-output
+% standardization) with LMC covariance (GPML composed kernel):
 %   K_ab = B^(1)_{o_a,o_b} k_Matérn3/2(t_a,t_b)
 %        + B^(2)_{o_a,o_b} k_RQ(t_a,t_b),
-% where o_a ∈ {M1,M2} is the output label at observation a.
+% where z = log1p(M) and o_a ∈ {M1,M2} is the output label at observation a.
+% Predictions are back-transformed to count scale via expm1 for plotting.
 % Observation noise: single shared likGauss sigma_n (ICM-consistent).
 %
 % Latent interpretation:
@@ -74,7 +76,7 @@ datasets = struct( ...
     'timeM2', {timeM2(:), newtimeM2(:)}, ...
     'dataM2', {dataM2(:), datapointsM2(:)});
 
-fprintf('=== Raw-count LMC MOGP (Matérn 3/2 + RQ, Q = 2, GPML @gp) ===\n');
+fprintf('=== Log1p LMC MOGP (Matérn 3/2 + RQ, Q = 2, GPML @gp) ===\n');
 
 %% ===== GPML setup =====
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -122,7 +124,7 @@ col_M1 = [0.10, 0.10, 0.10];
 col_M2 = [0.85, 0.16, 0.16];
 
 figure('Color', 'w', 'Position', [60, 60, 1240, 900], ...
-    'Name', 'Microglia: naive GP vs LMC MOGP');
+    'Name', 'Microglia: naive GP vs LMC MOGP (log1p)');
 tiledlayout(2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 for didx = 1:numel(results)
@@ -166,13 +168,15 @@ meanfunc = @meanZero;
 likfunc  = @likGauss;
 
 t_all = x_aug(:, 1);
+y_aug = y_aug(:);
 ell0 = max(std(t_all), 0.5);
 Lchol0 = [log(sqrt(0.5)); 0; log(sqrt(0.5))];
+sn0 = max(0.1 * std(y_aug), 1e-3);
 
 hyp0.mean = [];
 hyp0.cov  = [log(ell0); 0; Lchol0; ...
              log(ell0); 0; log(1);  Lchol0];
-hyp0.lik  = log(0.1);
+hyp0.lik  = log(sn0);
 
 s2_ell = 0.5^2;
 prior.cov = { {@priorGauss, log(ell0), s2_ell}, @priorClamped, [], [], [], ...
@@ -185,15 +189,15 @@ end
 function out = fit_naive_gp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
     temporalKernel, meanfunc, likfunc, inffunc, max_iters, k_plot)
 
-% Independent scalar GPs — one for M1, one for M2 — on raw counts.
-y_M1 = max(dataM1(:), 0);
-y_M2 = max(dataM2(:), 0);
+% Independent scalar GPs — one for M1, one for M2 — on z = log1p(count).
+z_M1 = count_to_log1p(dataM1);
+z_M2 = count_to_log1p(dataM2);
 
-fit1 = fit_single_gp(timeM1, y_M1, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters);
-fit2 = fit_single_gp(timeM2, y_M2, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters);
+fit1 = fit_single_gp(timeM1, z_M1, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters);
+fit2 = fit_single_gp(timeM2, z_M2, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters);
 
-out.M1 = pack_raw_fit(fit1.mu_y, fit1.sf_y, k_plot);
-out.M2 = pack_raw_fit(fit2.mu_y, fit2.sf_y, k_plot);
+out.M1 = pack_log1p_fit(fit1.mu_z, fit1.sf_z, k_plot);
+out.M2 = pack_log1p_fit(fit2.mu_z, fit2.sf_z, k_plot);
 out.hyp_M1 = fit1.hyp;
 out.hyp_M2 = fit2.hyp;
 out.nlml = fit1.nlml + fit2.nlml;
@@ -204,40 +208,36 @@ out.report.sn_M1 = exp(fit1.hyp.lik);
 out.report.sn_M2 = exp(fit2.hyp.lik);
 end
 
-function fit = fit_single_gp(x, y, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters)
-x = x(:); y = y(:);
+function fit = fit_single_gp(x, z, tgrid, temporalKernel, meanfunc, likfunc, inffunc, max_iters)
+x = x(:); z = z(:);
 ell0 = max(std(x), 0.5);
-sf0 = max(std(y), 0.1);
+sf0 = max(std(z), 0.1);
 sn0 = 0.1 * sf0;
 
 hyp.mean = [];
 hyp.cov = log([ell0; sf0]);
 hyp.lik = log(sn0);
 
-hyp = minimize(hyp, @gp, max_iters, inffunc, meanfunc, temporalKernel, likfunc, x, y);
-nlml = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, y);
-[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, y, tgrid);
+hyp = minimize(hyp, @gp, max_iters, inffunc, meanfunc, temporalKernel, likfunc, x, z);
+nlml = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, z);
+[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, temporalKernel, likfunc, x, z, tgrid);
 
 fit.hyp = hyp;
 fit.nlml = nlml;
-fit.mu_y = fmu(:);
-fit.sf_y = sqrt(max(fs2(:), 0));
+fit.mu_z = fmu(:);
+fit.sf_z = sqrt(max(fs2(:), 0));
 end
 
 function fit = fit_lmc_mogp(timeM1, dataM1, timeM2, dataM2, tgrid, ...
     covLMC, meanfunc, likfunc, max_iters, k_plot, LABEL_M1, LABEL_M2)
 
-% Floor negative counts; per-output standardization stabilizes optimization.
-y_M1 = max(dataM1(:), 0);
-y_M2 = max(dataM2(:), 0);
-mu1 = mean(y_M1); sd1 = std(y_M1);
-mu2 = mean(y_M2); sd2 = std(y_M2);
-if sd1 < eps, sd1 = 1; end
-if sd2 < eps, sd2 = 1; end
+% Joint LMC on z = log1p(count); shared response scale (no per-output standardization).
+z_M1 = count_to_log1p(dataM1);
+z_M2 = count_to_log1p(dataM2);
 
 x_aug = [timeM1(:), LABEL_M1 * ones(numel(timeM1), 1); ...
          timeM2(:), LABEL_M2 * ones(numel(timeM2), 1)];
-y_aug = [(y_M1 - mu1) / sd1; (y_M2 - mu2) / sd2];
+y_aug = [z_M1(:); z_M2(:)];
 
 [hyp0, ~, inffunc] = init_lmc_hyp(covLMC, x_aug, y_aug);
 
@@ -249,25 +249,18 @@ x_te_M2 = [tgrid, LABEL_M2 * ones(size(tgrid))];
 [~, ~, fmu1, fs21] = gp(hyp, inffunc, meanfunc, covLMC, likfunc, x_aug, y_aug, x_te_M1);
 [~, ~, fmu2, fs22] = gp(hyp, inffunc, meanfunc, covLMC, likfunc, x_aug, y_aug, x_te_M2);
 
-mu_y1 = mu1 + sd1 * fmu1(:);
-sf_y1 = sd1 * sqrt(max(fs21(:), 0));
-mu_y2 = mu2 + sd2 * fmu2(:);
-sf_y2 = sd2 * sqrt(max(fs22(:), 0));
-
-fit.M1 = pack_raw_fit(mu_y1, sf_y1, k_plot);
-fit.M2 = pack_raw_fit(mu_y2, sf_y2, k_plot);
+fit.M1 = pack_log1p_fit(fmu1(:), sqrt(max(fs21(:), 0)), k_plot);
+fit.M2 = pack_log1p_fit(fmu2(:), sqrt(max(fs22(:), 0)), k_plot);
 fit.hyp = hyp;
 fit.nlml = nlml;
-fit.report = build_lmc_report(hyp, nlml, sd1, sd2);
+fit.report = build_lmc_report(hyp, nlml);
 end
 
-function report = build_lmc_report(hyp, nlml, sd1, sd2)
+function report = build_lmc_report(hyp, nlml)
 % hyp.cov: [ell_m(1), sf_m(2), B1(3:5), ell_rq(6), sf_rq(7), alpha(8), B2(9:11)]
 hyp_cov = hyp.cov(:);
 B1 = chol2cov(hyp_cov(3:5));
 B2 = chol2cov(hyp_cov(9:11));
-sn_std = exp(hyp.lik);
-sd_avg = 0.5 * (sd1 + sd2);
 
 report.nlml = nlml;
 report.ell_matern = exp(hyp_cov(1));
@@ -279,8 +272,21 @@ report.B1 = B1;
 report.B2 = B2;
 report.rho_B1 = corr_from_B(B1);
 report.rho_B2 = corr_from_B(B2);
-report.sn_std = sn_std;
-report.sn_count = sn_std * sd_avg;
+report.sn = exp(hyp.lik);
+end
+
+function z = count_to_log1p(M)
+z = log1p(max(M(:), 0));
+end
+
+function pheno = pack_log1p_fit(mu_z, sf_z, k_plot)
+% Back-transform log1p GP predictions to count scale (approximate bands).
+pheno.mu_z = mu_z(:);
+pheno.sf_z = sf_z(:);
+pheno.mu = expm1(mu_z);
+pheno.sf = sf_z;
+pheno.lo = max(0, expm1(mu_z - k_plot .* sf_z));
+pheno.hi = expm1(mu_z + k_plot .* sf_z);
 end
 
 function B = chol2cov(hyp)
@@ -291,28 +297,21 @@ L(1:3:end) = exp(diag(L));
 B = L' * L;
 end
 
-function pheno = pack_raw_fit(mu, sf, k_plot)
-pheno.mu = mu(:);
-pheno.sf = sf(:);
-pheno.lo = mu - k_plot .* sf;
-pheno.hi = mu + k_plot .* sf;
-end
-
 function rho = corr_from_B(B)
 rho = B(1, 2) / sqrt(max(B(1, 1) * B(2, 2), eps));
 end
 
 function report_naive_fit(dataset_name, report)
-fprintf('[%s | Naive GP] NLML = %.4f, ell_M1 = %.4f, ell_M2 = %.4f, sn_M1 = %.4f, sn_M2 = %.4f\n', ...
+fprintf('[%s | Naive GP, log1p] NLML = %.4f, ell_M1 = %.4f, ell_M2 = %.4f, sn_M1 = %.4f, sn_M2 = %.4f\n', ...
     dataset_name, report.nlml, report.ell_M1, report.ell_M2, report.sn_M1, report.sn_M2);
 end
 
 function report_lmc_fit(dataset_name, report)
-fprintf('[%s | LMC MOGP] NLML = %.4f\n', dataset_name, report.nlml);
+fprintf('[%s | LMC MOGP, log1p] NLML = %.4f\n', dataset_name, report.nlml);
 fprintf('  Matérn 3/2: ell = %.4f, sf = %.4f (clamped)\n', report.ell_matern, report.sf_matern);
 fprintf('  RQ:         ell = %.4f, sf = %.4f (clamped), alpha = %.4f\n', ...
     report.ell_rq, report.sf_rq, report.alpha_rq);
-fprintf('  sn = %.4f (std scale), %.4f (approx count scale)\n', report.sn_std, report.sn_count);
+fprintf('  sn = %.4f (log1p scale)\n', report.sn);
 fprintf('  B^(1) = [%.4f %.4f; %.4f %.4f],  rho = %.4f\n', ...
     report.B1(1,1), report.B1(1,2), report.B1(2,1), report.B1(2,2), report.rho_B1);
 fprintf('  B^(2) = [%.4f %.4f; %.4f %.4f],  rho = %.4f\n', ...

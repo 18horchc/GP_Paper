@@ -77,7 +77,7 @@ max_iters = -200;
 n_out2 = 2;
 n_out3 = 3;
 sigma_R_factor = 4;   % downweight: sigma_R = 4 * sn (moderate soft regularizer)
-col_M1 = [0.10, 0.10, 0.10];
+col_M1 = [0.10, 0.10, 0.10]; %RGB plot colors
 col_M2 = [0.85, 0.16, 0.16];
 
 %% --- Previous SE GP + ridge plots (commented out) ---
