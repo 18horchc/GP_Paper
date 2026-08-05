@@ -163,46 +163,87 @@ ax1 = axes('Parent', tab_unc);
 plot_mm_gp_panel(ax1, m_unc, sf_unc, false, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax1, 'Baseline GP', 'Interpreter', 'none');
+title(ax1, 'Baseline GP', 'Interpreter', 'none', 'FontSize', 16);
 
 tab_aug = uitab(tg, 'Title', 'Virtual Obs GP');
 ax2 = axes('Parent', tab_aug);
 plot_mm_gp_panel(ax2, m_aug, sf_aug, true, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax2, 'Virtual Obs GP', 'Interpreter', 'none');
+title(ax2, 'Virtual Obs GP', 'Interpreter', 'none', 'FontSize', 16);
 
 tab_deriv = uitab(tg, 'Title', 'Virtual Deriv Obs GP');
 ax3 = axes('Parent', tab_deriv);
 plot_mm_gp_panel(ax3, m_deriv, sf_deriv, false, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none');
+title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 16);
 
-tab_both = uitab(tg, 'Title', 'VO + Deriv Obs GP');
+tab_both = uitab(tg, 'Title', 'Virtual + Deriv Obs GP');
 ax4 = axes('Parent', tab_both);
 plot_mm_gp_panel(ax4, m_both, sf_both, true, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax4, 'VO + Deriv Obs GP', 'Interpreter', 'none');
+title(ax4, 'Virtual + Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 16);
 
-%% Save each tab as a separate PNG
-% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
-%     'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
-% if ~exist(plot_dir, 'dir')
-%     mkdir(plot_dir);
-% end
-% tab_list = {tab_unc, tab_aug, tab_deriv, tab_both};
-% ax_list  = {ax1, ax2, ax3, ax4};
-% name_list = {'MM_Obs_Baseline_GP.png', 'MM_Obs_Virtual_Obs_GP.png', ...
-%     'MM_Obs_Virtual_Deriv_Obs_GP.png', 'MM_Obs_VO_plus_Deriv_Obs_GP.png'};
-% for i = 1:numel(tab_list)
-%     tg.SelectedTab = tab_list{i};
-%     drawnow;
-%     out_path = fullfile(plot_dir, name_list{i});
-%     exportgraphics(ax_list{i}, out_path, 'Resolution', 300);
-%     fprintf('Saved %s\n', out_path);
-% end
+%% Standalone legend (for LaTeX / Inkscape)
+figL = figure('Color', 'w', 'Position', [100, 100, 900, 80], ...
+    'Name', 'MM Obs shared legend');
+axL = axes('Parent', figL, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
+    'Position', [0 0 1 1]);
+hold(axL, 'on');
+hL = gobjects(6, 1);
+hL(1) = fill(axL, nan, nan, [0.72, 0.72, 0.78], 'EdgeColor', 'none', ...
+    'FaceAlpha', 0.5, 'DisplayName', '95% CI');
+hL(2) = plot(axL, nan, nan, 'k--', 'LineWidth', 2, ...
+    'DisplayName', 'GP Mean'); %Posterior mean
+hL(3) = plot(axL, nan, nan, 'b-', 'LineWidth', 1.5, ...
+    'DisplayName', 'True Model');
+hL(4) = plot(axL, nan, nan, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+    'DisplayName', 'Observed Data');
+hL(5) = scatter(axL, nan, nan, 90, 'd', ...
+    'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
+    'LineWidth', 1.5, 'DisplayName', 'Virtual Obs');
+hL(6) = plot(axL, nan, nan, '^', 'LineStyle', 'none', 'MarkerSize', 9, ...
+    'LineWidth', 0.8, 'MarkerFaceColor', [0.55, 0.25, 0.65], ...
+    'MarkerEdgeColor', 'k', 'DisplayName', 'Virtual Deriv Obs');
+lgd = legend(axL, hL, 'Orientation', 'horizontal');
+lgd.FontSize = 12;
+lgd.ItemTokenSize = [20, 12];
+lgd.Box = 'on';
+drawnow;
+% Shrink figure to the legend's natural size (tight box, no side padding)
+figL.Units = 'pixels';
+lgd.Units = 'pixels';
+lp = lgd.Position;
+margin = 4;
+figL.Position(3:4) = [lp(3) + 2 * margin, lp(4) + 2 * margin];
+lgd.Position = [margin, margin, lp(3), lp(4)];
+axL.Position = [0 0 1 1];
+drawnow;
+
+%% Save each tab and the shared legend as EPS
+plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+    'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
+if ~exist(plot_dir, 'dir')
+    mkdir(plot_dir);
+end
+tab_list = {tab_unc, tab_aug, tab_deriv, tab_both};
+ax_list  = {ax1, ax2, ax3, ax4};
+name_list = {'MM_Obs_Baseline_GP.eps', 'MM_Obs_Virtual_Obs_GP.eps', ...
+    'MM_Obs_Virtual_Deriv_Obs_GP.eps', 'MM_Obs_VO_plus_Deriv_Obs_GP.eps'};
+for i = 1:numel(tab_list)
+    tg.SelectedTab = tab_list{i};
+    ax_list{i}.Toolbar.Visible = 'off';
+    disableDefaultInteractivity(ax_list{i});
+    drawnow;
+    out_path = fullfile(plot_dir, name_list{i});
+    exportgraphics(ax_list{i}, out_path, 'ContentType', 'vector');
+    fprintf('Saved %s\n', out_path);
+end
+legend_path = fullfile(plot_dir, 'MM_Obs_legend.eps');
+exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+fprintf('Saved %s\n', legend_path);
 
 fprintf('\nFixed noises: sigma_data=%.4f | sigma_VO_zero=%.4g | sigma_VO_sat=%.4g | sn_deriv=%.4g\n', ...
     sigma_data, sigma_VO_zero, sigma_VO_sat, sn_deriv);
@@ -234,12 +275,9 @@ plot(ax, x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (M
 plot(ax, x_obs, y_obs, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', 'Observed data');
 if show_virt
-    scatter(ax, x_virt_zero, y_virt_zero, 90, 's', ...
+    scatter(ax, [x_virt_zero(:); x_virt_sat(:)], [y_virt_zero(:); y_virt_sat(:)], 90, 'd', ...
         'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
-        'LineWidth', 1.5, 'DisplayName', 'Virtual anchor: v(0)=0');
-    scatter(ax, x_virt_sat, y_virt_sat, 90, 'd', ...
-        'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
-        'LineWidth', 1.5, 'DisplayName', 'Virtual soft saturation target');
+        'LineWidth', 1.5, 'DisplayName', 'Virtual observations');
 end
 yline(ax, Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 xlim(ax, [0, x_max]);
@@ -255,7 +293,7 @@ if ~isempty(x_deriv)
         uistack(h_deriv, 'top');
     end
 end
-xlabel(ax, '[S] (mM)');
-ylabel(ax, 'v_0 (\muM/s)');
-legend(ax, 'Location', 'southeast');
+ax.FontSize = 13;
+xlabel(ax, '[S] (mM)', 'FontSize', 14);
+ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 14);
 end
