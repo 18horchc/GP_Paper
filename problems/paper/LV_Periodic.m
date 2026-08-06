@@ -1,6 +1,7 @@
 % Paper figure: Lotka-Volterra GP comparison (baseline SE vs. periodic kernel).
-% Prey and predator are fit independently with each kernel; baseline GP in the
-% left panel, periodic-kernel GP in the right panel (both states overlaid).
+% Prey and predator are fit independently with each kernel. Baseline GP and
+% periodic-kernel GP are written as separate figures (both states overlaid),
+% with a standalone shared legend for LaTeX / Inkscape.
 % Requires gp_nlml_cov_only.m on the path (problems/) and the GPML toolbox.
 clear; clc; close all;
 
@@ -87,39 +88,99 @@ fprintf('\n=== Periodic kernel ===\n');
 [per_pred.m, per_pred.sf, per_pred.hyp, per_pred.nlml] = fit_periodic_state( ...
     x_train, y_train_pred, sn_pred, p0, x_grid, inffunc, meanfunc, covPer, likfunc);
 
-%% Plot: baseline (left) vs periodic (right), prey + predator overlaid
+%% Plot: separate figures for baseline and periodic (shared axes limits)
 k_plot = 2;
 band_label = sprintf('\\pm %g\\sigma_f', k_plot);
 col_prey = [0.00, 0.45, 0.74];   % blue
 col_pred = [0.85, 0.16, 0.16];   % red
 
-ylim_shared = [0, max([ ...
+ylo = min([ ...
+    y_train_prey(:); y_train_pred(:); ...
+    se_prey.m - k_plot * se_prey.sf; se_pred.m - k_plot * se_pred.sf; ...
+    per_prey.m - k_plot * per_prey.sf; per_pred.m - k_plot * per_pred.sf]);
+yhi = max([ ...
     y_train_prey(:); y_train_pred(:); ...
     se_prey.m + k_plot * se_prey.sf; se_pred.m + k_plot * se_pred.sf; ...
-    per_prey.m + k_plot * per_prey.sf; per_pred.m + k_plot * per_pred.sf]) * 1.05];
+    per_prey.m + k_plot * per_prey.sf; per_pred.m + k_plot * per_pred.sf]);
+pad = 0.05 * (yhi - ylo);
+ylim_shared = [ylo - pad, yhi + pad];
 
-figure('Color', 'w', 'Position', [80, 80, 1200, 540], ...
-    'Name', 'Lotka-Volterra GP: baseline vs periodic kernel');
-tiledlayout(1, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+panels(1) = struct('prey', se_prey,  'pred', se_pred,  ...
+    'title', 'Baseline GP (SE Kernel)', 'fname', 'LV_Periodic_Baseline_GP.eps');
+panels(2) = struct('prey', per_prey, 'pred', per_pred, ...
+    'title', 'Periodic Kernel GP', 'fname', 'LV_Periodic_Periodic_GP.eps');
 
-panels(1) = struct('prey', se_prey, 'pred', se_pred, 'title', 'Baseline GP (squared exponential)');
-panels(2) = struct('prey', per_prey, 'pred', per_pred, 'title', 'Periodic kernel GP');
-
+ax_list = gobjects(2, 1);
+fig_list = gobjects(2, 1);
 for pidx = 1:2
-    nexttile;
-    ax = gca; ax.Layer = 'top';
-    hold on; grid on;
+    fig_list(pidx) = figure('Color', 'w', 'Position', [80 + 40*(pidx-1), 80, 640, 480], ...
+        'Name', panels(pidx).title);
+    ax = axes('Parent', fig_list(pidx));
+    ax.Layer = 'top';
+    hold(ax, 'on'); grid(ax, 'on');
     plot_state(ax, x_grid, y_true_grid(:, 1), panels(pidx).prey, ...
         x_train, y_train_prey, col_prey, k_plot, 'Prey', band_label);
     plot_state(ax, x_grid, y_true_grid(:, 2), panels(pidx).pred, ...
         x_train, y_train_pred, col_pred, k_plot, 'Predator', band_label);
-    xlabel('t');
-    ylabel('Population');
-    title(panels(pidx).title, 'Interpreter', 'none');
-    xlim([t_min, t_max]);
-    ylim(ylim_shared);
-    legend('Location', 'northeast', 'NumColumns', 2, 'FontSize', 8);
+    xlabel(ax, 't');
+    ylabel(ax, 'Population');
+    title(ax, panels(pidx).title, 'Interpreter', 'none');
+    xlim(ax, [t_min, t_max]);
+    ylim(ax, ylim_shared);
+    ax_list(pidx) = ax;
 end
+
+%% Standalone shared legend (for LaTeX / Inkscape)
+figL = figure('Color', 'w', 'Position', [100, 100, 900, 80], ...
+    'Name', 'LV Periodic shared legend');
+axL = axes('Parent', figL, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
+    'Position', [0 0 1 1]);
+hold(axL, 'on');
+hL = gobjects(8, 1);
+hL(1) = fill(axL, nan, nan, col_prey, 'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
+    'DisplayName', 'Prey 95% CI');
+hL(2) = plot(axL, nan, nan, '-', 'Color', col_prey, 'LineWidth', 1.5, ...
+    'DisplayName', 'Prey True Model');
+hL(3) = plot(axL, nan, nan, '--', 'Color', col_prey, 'LineWidth', 2, ...
+    'DisplayName', 'Prey GP Mean');
+hL(4) = plot(axL, nan, nan, 'o', 'Color', col_prey, 'MarkerFaceColor', col_prey, ...
+    'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'Prey Obs Data');
+hL(5) = fill(axL, nan, nan, col_pred, 'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
+    'DisplayName', 'Predator 95% CI');
+hL(6) = plot(axL, nan, nan, '-', 'Color', col_pred, 'LineWidth', 1.5, ...
+    'DisplayName', 'Predator True Model');
+hL(7) = plot(axL, nan, nan, '--', 'Color', col_pred, 'LineWidth', 2, ...
+    'DisplayName', 'Predator GP Mean');
+hL(8) = plot(axL, nan, nan, 'o', 'Color', col_pred, 'MarkerFaceColor', col_pred, ...
+    'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'Predator Obs Data');
+lgd = legend(axL, hL, 'Orientation', 'horizontal', 'NumColumns', 4);
+lgd.FontSize = 10;
+lgd.ItemTokenSize = [20, 12];
+drawnow;
+figL.Units = 'pixels';
+lgd.Units = 'pixels';
+lp = lgd.Position;
+margin = 6;
+figL.Position(3:4) = [lp(3) + 2 * margin, lp(4) + 2 * margin];
+lgd.Position = [margin, margin, lp(3), lp(4)];
+
+% %% Save each panel and the shared legend as EPS
+% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+%     'results', 'plots', 'Paper Draft 2', 'Interacting Species');
+% if ~exist(plot_dir, 'dir')
+%     mkdir(plot_dir);
+% end
+% for i = 1:numel(ax_list)
+%     ax_list(i).Toolbar.Visible = 'off';
+%     disableDefaultInteractivity(ax_list(i));
+%     drawnow;
+%     out_path = fullfile(plot_dir, panels(i).fname);
+%     exportgraphics(ax_list(i), out_path, 'ContentType', 'vector');
+%     fprintf('Saved %s\n', out_path);
+% end
+% legend_path = fullfile(plot_dir, 'LV_Periodic_legend.eps');
+% exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend_path);
 
 %% Report
 fprintf('\n--- Fitted hyperparameters ---\n');
@@ -148,7 +209,7 @@ function [m, sf, hyp, nlml] = fit_periodic_state(x, y, sn, p0, x_grid, inffunc, 
 % Period p is optimized jointly with ell and sf (treated exactly like ell),
 % in a single minimize run from the manual init p0.
 x = x(:); y = y(:);
-ell0 = 1;          % dimensionless roughness within one period
+ell0 = 1;  %or std(x), intializing to std(x) gives slightly higher ell and sf   % dimensionless roughness within one period
 sf0  = std(y);
 sn_fixed = log(sn);
 hyp_cov0 = log([ell0; p0; sf0]);
