@@ -117,14 +117,15 @@ for pidx = 1:2
         'Name', panels(pidx).title);
     ax = axes('Parent', fig_list(pidx));
     ax.Layer = 'top';
+    ax.FontSize = 16;
     hold(ax, 'on'); grid(ax, 'on');
     plot_state(ax, x_grid, y_true_grid(:, 1), panels(pidx).prey, ...
         x_train, y_train_prey, col_prey, k_plot, 'Prey', band_label);
     plot_state(ax, x_grid, y_true_grid(:, 2), panels(pidx).pred, ...
         x_train, y_train_pred, col_pred, k_plot, 'Predator', band_label);
-    xlabel(ax, 't');
-    ylabel(ax, 'Population');
-    title(ax, panels(pidx).title, 'Interpreter', 'none');
+    xlabel(ax, 't', 'FontSize', 16);
+    ylabel(ax, 'Population', 'FontSize', 16);
+    title(ax, panels(pidx).title, 'Interpreter', 'none', 'FontSize', 16);
     xlim(ax, [t_min, t_max]);
     ylim(ax, ylim_shared);
     ax_list(pidx) = ax;
@@ -154,7 +155,7 @@ hL(7) = plot(axL, nan, nan, '--', 'Color', col_pred, 'LineWidth', 2, ...
 hL(8) = plot(axL, nan, nan, 'o', 'Color', col_pred, 'MarkerFaceColor', col_pred, ...
     'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'Predator Obs Data');
 lgd = legend(axL, hL, 'Orientation', 'horizontal', 'NumColumns', 4);
-lgd.FontSize = 10;
+lgd.FontSize = 16;
 lgd.ItemTokenSize = [20, 12];
 drawnow;
 figL.Units = 'pixels';
@@ -175,14 +176,14 @@ lgd.Position = [margin, margin, lp(3), lp(4)];
 %     disableDefaultInteractivity(ax_list(i));
 %     drawnow;
 %     out_path = fullfile(plot_dir, panels(i).fname);
-%     exportgraphics(ax_list(i), out_path, 'ContentType', 'vector');
+%     exportgraphics(ax_list(i), out_path, 'ContentType', 'image'); %maybe 'vector' instead of 'image? Ask Andrea
 %     fprintf('Saved %s\n', out_path);
 % end
 % legend_path = fullfile(plot_dir, 'LV_Periodic_legend.eps');
-% exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+% exportgraphics(figL, legend_path, 'ContentType', 'image', 'BackgroundColor', 'white');
 % fprintf('Saved %s\n', legend_path);
 
-%% Report
+%% Console report
 fprintf('\n--- Fitted hyperparameters ---\n');
 report('Baseline  Prey', se_prey, false);
 report('Baseline  Pred', se_pred, false);

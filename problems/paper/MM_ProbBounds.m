@@ -163,7 +163,7 @@ for p = 1:4
     ax_list(p) = axes('Parent', tab_list(p));
     plot_mm_bounds_panel(ax_list(p), panels(p).m, panels(p).sf, ...
         x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax);
-    title(ax_list(p), panels(p).title, 'Interpreter', 'none', 'FontSize', 16);
+    title(ax_list(p), panels(p).title, 'Interpreter', 'none', 'FontSize', 18);
 end
 
 %% Standalone legend (for LaTeX / Inkscape)
@@ -182,7 +182,7 @@ hL(3) = plot(axL, nan, nan, 'b-', 'LineWidth', 1.5, ...
 hL(4) = plot(axL, nan, nan, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', 'Observed Data');
 lgd = legend(axL, hL, 'Orientation', 'horizontal');
-lgd.FontSize = 12;
+lgd.FontSize = 14;
 lgd.ItemTokenSize = [20, 12];
 drawnow;
 figL.Units = 'pixels';
@@ -192,28 +192,28 @@ margin = 6;
 figL.Position(3:4) = [lp(3) + 2 * margin, lp(4) + 2 * margin];
 lgd.Position = [margin, margin, lp(3), lp(4)];
 
-%% Save each tab and the shared legend as EPS
-plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
-    'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
-if ~exist(plot_dir, 'dir')
-    mkdir(plot_dir);
-end
-name_list = {'MM_ProbBounds_Baseline_GP.eps', 'MM_ProbBounds_Lower_bound_GP.eps', ...
-    'MM_ProbBounds_Upper_bound_GP.eps', 'MM_ProbBounds_Both_bounds_GP.eps'};
-for i = 1:numel(tab_list)
-    tg.SelectedTab = tab_list(i);
-    ax_list(i).Toolbar.Visible = 'off';
-    disableDefaultInteractivity(ax_list(i));
-    drawnow;
-    out_path = fullfile(plot_dir, name_list{i});
-    exportgraphics(ax_list(i), out_path, 'ContentType', 'vector');
-    fprintf('Saved %s\n', out_path);
-end
-legend_path = fullfile(plot_dir, 'MM_ProbBounds_legend.eps');
-exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
-fprintf('Saved %s\n', legend_path);
+% %% Save each tab and the shared legend as EPS
+% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+%     'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
+% if ~exist(plot_dir, 'dir')
+%     mkdir(plot_dir);
+% end
+% name_list = {'MM_ProbBounds_Baseline_GP.eps', 'MM_ProbBounds_Lower_bound_GP.eps', ...
+%     'MM_ProbBounds_Upper_bound_GP.eps', 'MM_ProbBounds_Both_bounds_GP.eps'};
+% for i = 1:numel(tab_list)
+%     tg.SelectedTab = tab_list(i);
+%     ax_list(i).Toolbar.Visible = 'off';
+%     disableDefaultInteractivity(ax_list(i));
+%     drawnow;
+%     out_path = fullfile(plot_dir, name_list{i});
+%     exportgraphics(ax_list(i), out_path, 'ContentType', 'image');
+%     fprintf('Saved %s\n', out_path);
+% end
+% legend_path = fullfile(plot_dir, 'MM_ProbBounds_legend.eps');
+% exportgraphics(figL, legend_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend_path);
 
-%% Console summary
+%% Console report
 fprintf('\nNaive / baseline: ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
 fprintf('Lower bound:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
@@ -223,7 +223,7 @@ fprintf('Upper bound:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d 
 fprintf('Both bounds:      ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
     exp(hyp_both.cov(1)), exp(hyp_both.cov(2)), exp(hyp_both.lik), nlml_both, exitflag_both, max(c_both));
 
-%% Local helpers
+%% ----- local functions -----
 function [hyp_con, nlml_con, exitflag_con, c_final] = fit_pens_constrained( ...
     objfun, nonlcon, hyp_tpl, hyp_lb, hyp_ub, theta_unc_box, opts_pens, nTry, nMultistart, rng_seed)
 
@@ -344,9 +344,9 @@ yh0 = yline(ax, 0, 'k:', 'v_0 = 0', 'Alpha', 0.5);
 yh0.Annotation.LegendInformation.IconDisplayStyle = 'off';
 yhV = yline(ax, Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
 yhV.Annotation.LegendInformation.IconDisplayStyle = 'off';
-ax.FontSize = 13;
-xlabel(ax, '[S] (mM)', 'FontSize', 14);
-ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 14);
+ax.FontSize = 18;
+xlabel(ax, '[S] (mM)', 'FontSize', 18);
+ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 18);
 xlim(ax, [0, x_max]);
 ylim(ax, ylim_shared);
 end

@@ -163,28 +163,28 @@ ax1 = axes('Parent', tab_unc);
 plot_mm_gp_panel(ax1, m_unc, sf_unc, false, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax1, 'Baseline GP', 'Interpreter', 'none', 'FontSize', 16);
+title(ax1, 'Baseline GP', 'Interpreter', 'none', 'FontSize', 18);
 
 tab_aug = uitab(tg, 'Title', 'Virtual Obs GP');
 ax2 = axes('Parent', tab_aug);
 plot_mm_gp_panel(ax2, m_aug, sf_aug, true, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax2, 'Virtual Obs GP', 'Interpreter', 'none', 'FontSize', 16);
+title(ax2, 'Virtual Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
 tab_deriv = uitab(tg, 'Title', 'Virtual Deriv Obs GP');
 ax3 = axes('Parent', tab_deriv);
 plot_mm_gp_panel(ax3, m_deriv, sf_deriv, false, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 16);
+title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
 tab_both = uitab(tg, 'Title', 'Virtual + Deriv Obs GP');
 ax4 = axes('Parent', tab_both);
 plot_mm_gp_panel(ax4, m_both, sf_both, true, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax4, 'Virtual + Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 16);
+title(ax4, 'Virtual + Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
 %% Standalone legend (for LaTeX / Inkscape)
 figL = figure('Color', 'w', 'Position', [100, 100, 900, 80], ...
@@ -208,7 +208,7 @@ hL(6) = plot(axL, nan, nan, '^', 'LineStyle', 'none', 'MarkerSize', 9, ...
     'LineWidth', 0.8, 'MarkerFaceColor', [0.55, 0.25, 0.65], ...
     'MarkerEdgeColor', 'k', 'DisplayName', 'Virtual Deriv Obs');
 lgd = legend(axL, hL, 'Orientation', 'horizontal');
-lgd.FontSize = 12;
+lgd.FontSize = 14;
 lgd.ItemTokenSize = [20, 12];
 lgd.Box = 'on';
 drawnow;
@@ -222,29 +222,30 @@ lgd.Position = [margin, margin, lp(3), lp(4)];
 axL.Position = [0 0 1 1];
 drawnow;
 
-%% Save each tab and the shared legend as EPS
-plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
-    'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
-if ~exist(plot_dir, 'dir')
-    mkdir(plot_dir);
-end
-tab_list = {tab_unc, tab_aug, tab_deriv, tab_both};
-ax_list  = {ax1, ax2, ax3, ax4};
-name_list = {'MM_Obs_Baseline_GP.eps', 'MM_Obs_Virtual_Obs_GP.eps', ...
-    'MM_Obs_Virtual_Deriv_Obs_GP.eps', 'MM_Obs_VO_plus_Deriv_Obs_GP.eps'};
-for i = 1:numel(tab_list)
-    tg.SelectedTab = tab_list{i};
-    ax_list{i}.Toolbar.Visible = 'off';
-    disableDefaultInteractivity(ax_list{i});
-    drawnow;
-    out_path = fullfile(plot_dir, name_list{i});
-    exportgraphics(ax_list{i}, out_path, 'ContentType', 'vector');
-    fprintf('Saved %s\n', out_path);
-end
-legend_path = fullfile(plot_dir, 'MM_Obs_legend.eps');
-exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
-fprintf('Saved %s\n', legend_path);
+% %% Save each tab and the shared legend as EPS
+% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+%     'results', 'plots', 'Paper Draft 2', 'Enzyme Kinetics');
+% if ~exist(plot_dir, 'dir')
+%     mkdir(plot_dir);
+% end
+% tab_list = {tab_unc, tab_aug, tab_deriv, tab_both};
+% ax_list  = {ax1, ax2, ax3, ax4};
+% name_list = {'MM_Obs_Baseline_GP.eps', 'MM_Obs_Virtual_Obs_GP.eps', ...
+%     'MM_Obs_Virtual_Deriv_Obs_GP.eps', 'MM_Obs_VO_plus_Deriv_Obs_GP.eps'};
+% for i = 1:numel(tab_list)
+%     tg.SelectedTab = tab_list{i};
+%     ax_list{i}.Toolbar.Visible = 'off';
+%     disableDefaultInteractivity(ax_list{i});
+%     drawnow;
+%     out_path = fullfile(plot_dir, name_list{i});
+%     exportgraphics(ax_list{i}, out_path, 'ContentType', 'image');
+%     fprintf('Saved %s\n', out_path);
+% end
+% legend_path = fullfile(plot_dir, 'MM_Obs_legend.eps');
+% exportgraphics(figL, legend_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend_path);
 
+%% Console report
 fprintf('\nFixed noises: sigma_data=%.4f | sigma_VO_zero=%.4g | sigma_VO_sat=%.4g | sn_deriv=%.4g\n', ...
     sigma_data, sigma_VO_zero, sigma_VO_sat, sn_deriv);
 fprintf('Baseline:      ell=%.4f, sf=%.4f, sn=%.4f (fixed) | NLML=%.4f\n', ...
@@ -262,6 +263,7 @@ for j = 1:numel(x_deriv)
         x_deriv(j), y_deriv(j), m_deriv_at_xd(j), sqrt(s2_deriv_at_xd(j)), mm_deriv_true(j));
 end
 
+%% ----- local functions -----
 function plot_mm_gp_panel(ax, m, sf, show_virt, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
     x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat)
@@ -293,7 +295,7 @@ if ~isempty(x_deriv)
         uistack(h_deriv, 'top');
     end
 end
-ax.FontSize = 13;
-xlabel(ax, '[S] (mM)', 'FontSize', 14);
-ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 14);
+ax.FontSize = 18;
+xlabel(ax, '[S] (mM)', 'FontSize', 18);
+ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 18);
 end

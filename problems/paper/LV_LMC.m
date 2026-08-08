@@ -34,7 +34,7 @@ x_grid = linspace(t_min, t_max, 600)';
 [~, z_grid] = ode45(odefun, x_grid, z0);
 y_true_grid = max(z_grid, 0);   % [n_grid x 2] -> columns [prey, predator]
 
-%% Training data (additive Gaussian noise, ~5% of each state's amplitude)
+%% Training data (additive Gaussian noise: 1% prey, 10% predator amplitude)
 % % --- Shared-grid sampling (original) ---
 % rng(100);
 % n_train = 10;
@@ -58,11 +58,12 @@ y_true_grid = max(z_grid, 0);   % [n_grid x 2] -> columns [prey, predator]
 
 % --- Dense predator, sparse prey with a full-period gap ---
 rng(100);
-noise_frac = 0.05;
+noise_frac_prey = 0.01;
+noise_frac_pred = 0.10;
 amp_prey = max(y_true_grid(:, 1));
 amp_pred = max(y_true_grid(:, 2));
-sn_prey = noise_frac * amp_prey;
-sn_pred = noise_frac * amp_pred;
+sn_prey = noise_frac_prey * amp_prey;
+sn_pred = noise_frac_pred * amp_pred;
 
 T_period = 10;   % ~one LV cycle (~30/3; matches periodic init p0)
 gap_lo = (t_min + t_max) / 2 - T_period / 2;   % gap starts at 10
@@ -84,7 +85,7 @@ y_train_pred = y_true_pred + sn_pred * randn(n_pred, 1);
 fprintf('Synthetic LV data: n_prey=%d (gap [%.1f, %.1f]), n_pred=%d on [%.0f, %.0f]\n', ...
     n_prey, gap_lo, gap_hi, n_pred, t_min, t_max);
 fprintf('Additive noise: sigma_prey=%.4f (%.0f%% of %.2f), sigma_pred=%.4f (%.0f%% of %.2f)\n', ...
-    sn_prey, 100 * noise_frac, amp_prey, sn_pred, 100 * noise_frac, amp_pred);
+    sn_prey, 100 * noise_frac_prey, amp_prey, sn_pred, 100 * noise_frac_pred, amp_pred);
 
 %% GPML setup
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -154,7 +155,7 @@ prior.cov = { {@priorGauss, log(ellShort), s2_ell}, [], @priorClamped, [], [], [
 inffunc_lmc = {@infPrior, @infGaussLik, prior};
 
 fprintf('Optimizing LMC hyperparameters (infPrior + infGaussLik)...\n');
-hyp_lmc = minimize(hyp_lmc, @gp, -300, inffunc_lmc, meanfunc, covLMC, likfunc, x_aug, y_aug);
+hyp_lmc = minimize(hyp_lmc, @gp, -1000, inffunc_lmc, meanfunc, covLMC, likfunc, x_aug, y_aug);
 nlml_lmc = gp(hyp_lmc, inffunc_lmc, meanfunc, covLMC, likfunc, x_aug, y_aug);
 
 % Predict each state on the grid (carrying its label), then un-standardize.
@@ -216,13 +217,14 @@ for pidx = 1:4
         'Name', panels(pidx).title);
     ax = axes('Parent', fig_list(pidx));
     ax.Layer = 'top';
+    ax.FontSize = 16;
     hold(ax, 'on'); grid(ax, 'on');
     plot_state(ax, x_grid, panels(pidx).y_true, panels(pidx).fit, ...
         panels(pidx).x_obs, panels(pidx).y_obs, panels(pidx).col, ...
         k_plot, panels(pidx).state, band_label);
-    xlabel(ax, 't');
-    ylabel(ax, 'Population');
-    title(ax, panels(pidx).title, 'Interpreter', 'none');
+    xlabel(ax, 't', 'FontSize', 16);
+    ylabel(ax, 'Population', 'FontSize', 16);
+    title(ax, panels(pidx).title, 'Interpreter', 'none', 'FontSize', 16);
     xlim(ax, [t_min, t_max]);
     ylim(ax, panels(pidx).ylim);
     ax_list(pidx) = ax;
@@ -252,7 +254,7 @@ hL(7) = plot(axL, nan, nan, '--', 'Color', col_pred, 'LineWidth', 2, ...
 hL(8) = plot(axL, nan, nan, 'o', 'Color', col_pred, 'MarkerFaceColor', col_pred, ...
     'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'Predator Obs Data');
 lgd = legend(axL, hL, 'Orientation', 'horizontal', 'NumColumns', 4);
-lgd.FontSize = 10;
+lgd.FontSize = 16;
 lgd.ItemTokenSize = [20, 12];
 drawnow;
 figL.Units = 'pixels';
@@ -273,14 +275,14 @@ for i = 1:numel(ax_list)
     disableDefaultInteractivity(ax_list(i));
     drawnow;
     out_path = fullfile(plot_dir, panels(i).fname);
-    exportgraphics(ax_list(i), out_path, 'ContentType', 'vector');
+    exportgraphics(ax_list(i), out_path, 'ContentType', 'image');  %maybe 'vector' instead of 'image? Ask Andrea
     fprintf('Saved %s\n', out_path);
 end
 legend_path = fullfile(plot_dir, 'LV_LMC_legend.eps');
-exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+exportgraphics(figL, legend_path, 'ContentType', 'image', 'BackgroundColor', 'white');
 fprintf('Saved %s\n', legend_path);
 
-%% Report
+%% Console report
 fprintf('\n--- Fitted hyperparameters ---\n');
 fprintf('Naive  Prey: ell=%.4f, p=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(per_prey.hyp.cov(1)), exp(per_prey.hyp.cov(2)), exp(per_prey.hyp.cov(3)), ...
@@ -308,7 +310,7 @@ ell0 = 1;   % dimensionless roughness within one period
 sf0  = std(y);
 sn_fixed = log(sn);
 hyp_cov0 = log([ell0; p0; sf0]);
-hyp_cov = minimize(hyp_cov0, @gp_nlml_cov_only, -100, sn_fixed, ...
+hyp_cov = minimize(hyp_cov0, @gp_nlml_cov_only, -300, sn_fixed, ...
     inffunc, meanfunc, covfunc, likfunc, x, y);
 hyp = struct('mean', [], 'cov', hyp_cov(:), 'lik', sn_fixed);
 nlml = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y);
