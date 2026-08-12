@@ -1,10 +1,16 @@
-function varargout = gp_seiso_hetero_noise(mode, hyp, x, y, noise_var, xs)
+function varargout = gp_seiso_hetero_noise(mode, hyp, x, y, noise_var, xs, noise_var_star)
 %GP_SEISO_HETERO_NOISE SE-iso GP with fixed per-row observation noise.
 %   nlml = gp_seiso_hetero_noise('nlml', hyp, x, y, noise_var)
 %   [ymu, ys2, fmu, fs2] = gp_seiso_hetero_noise('pred', hyp, x, y, noise_var, xs)
+%   [ymu, ys2, fmu, fs2] = gp_seiso_hetero_noise('pred', hyp, x, y, noise_var, xs, noise_var_star)
 %
 %   K_y = K_f + diag(noise_var). Optimizes hyp.cov only (ell, sf); hyp.lik ignored.
+%   If noise_var_star is supplied (numel(xs) x 1), predictive observation variance is
+%   ys2 = fs2 + noise_var_star; otherwise ys2 = fs2 (latent only; backward compatible).
 
+if nargin < 7
+    noise_var_star = [];
+end
 
 %This switch dispatches behavior based on mode: it calls either nlml_core to 
 % compute negative log marginal likelihood results or pred_core to compute 
@@ -14,7 +20,7 @@ switch lower(mode)
         [varargout{1:nargout}] = nlml_core(hyp, x, y, noise_var);
     case 'pred'
         [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = ...
-            pred_core(hyp, x, y, noise_var, xs);
+            pred_core(hyp, x, y, noise_var, xs, noise_var_star);
     otherwise
         error('gp_seiso_hetero_noise:UnknownMode', 'Unknown mode: %s', mode);
 end
@@ -61,7 +67,10 @@ end
 
 %prediction step uses standard GP posterior (same as baseline), but with
 %the custom Ky
-function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, noise_var, xs)
+function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, noise_var, xs, noise_var_star)
+if nargin < 6
+    noise_var_star = [];
+end
 [Ky, z, ~, ell, sf2] = build_Ky(hyp, x, y, noise_var);
 x = x(:);
 xs = xs(:);
@@ -78,7 +87,16 @@ fs2 = max(k_diag - sum(V.^2, 1).', 0);
 fmu = fmu(:);
 fs2 = fs2(:);
 ymu = fmu;
-ys2 = fs2;
+if isempty(noise_var_star)
+    ys2 = fs2;
+else
+    noise_var_star = noise_var_star(:);
+    if numel(noise_var_star) ~= nS
+        error('gp_seiso_hetero_noise:BadNoiseVarStar', ...
+            'noise_var_star must have length numel(xs)=%d, got %d.', nS, numel(noise_var_star));
+    end
+    ys2 = fs2 + max(noise_var_star, 0);
+end
 end
 
 % build custom cov with different noise along diag
