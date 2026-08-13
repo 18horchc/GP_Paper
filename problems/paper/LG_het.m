@@ -187,49 +187,136 @@ legend('Location', 'southeast');
 set(gca, 'FontSize', 12);
 xlim([t_min, t_max]);
 
-%% Trajectory figure (one model per tab)
-fig = figure('Color', 'w', 'Position', [80, 80, 900, 560], ...
+%% Figure 2: Trajectory figure (one model per tab; shared legend separate)
+fig2 = figure('Color', 'w', 'Position', [80, 80, 900, 560], ...
     'Name', 'LG_het: logistic trajectories A-E');
-tg = uitabgroup(fig);
+tg = uitabgroup(fig2);
 
 tab_a = uitab(tg, 'Title', 'A: Homo GP');
 ax_a = axes('Parent', tab_a);
-plot_traj(ax_a, x_grid, f_true, fmu_a, fs2_a, x_train, y_train, k_plot, 'A: homoscedastic');
+plot_traj(ax_a, x_grid, f_true, fmu_a, fs2_a, x_train, y_train, k_plot, 'A: Homoscedastic GP');
 
 tab_b = uitab(tg, 'Title', 'B: Oracle Hetero');
 ax_b = axes('Parent', tab_b);
-plot_traj(ax_b, x_grid, f_true, fmu_b, fs2_b, x_train, y_train, k_plot, 'B: oracle hetero');
+plot_traj(ax_b, x_grid, f_true, fmu_b, fs2_b, x_train, y_train, k_plot, 'B: Oracle Heteroscedastic');
 
 tab_c = uitab(tg, 'Title', 'C: Empirical s^2');
 ax_c = axes('Parent', tab_c);
-plot_traj(ax_c, x_grid, f_true, fmu_c, fs2_c, x_train, y_train, k_plot, 'C: empirical s^2');
+plot_traj(ax_c, x_grid, f_true, fmu_c, fs2_c, x_train, y_train, k_plot, 'C: Empirical Replicate Variance');
 
 tab_d = uitab(tg, 'Title', 'D: NLML per-time sn');
 ax_d = axes('Parent', tab_d);
-plot_traj(ax_d, x_grid, f_true, fmu_d, fs2_d, x_train, y_train, k_plot, 'D: NLML per-time noise');
+plot_traj(ax_d, x_grid, f_true, fmu_d, fs2_d, x_train, y_train, k_plot, 'D: NLML Per-Time Noise');
 
 tab_e = uitab(tg, 'Title', 'E: VHGPR');
 ax_e = axes('Parent', tab_e);
 plot_traj(ax_e, x_grid, f_true, fmu_e, fs2_e, x_train, y_train, k_plot, 'E: VHGPR');
 
-%% Noise SD comparison
-figure('Color', 'w', 'Position', [80, 120, 700, 420], ...
+%% Standalone shared legend for Figure 2 (for LaTeX / Inkscape)
+band_label = sprintf('\\mu_f \\pm %.2g\\sigma_f', k_plot);
+fig2L = figure('Color', 'w', 'Position', [100, 100, 900, 80], ...
+    'Name', 'LG_het: traj shared legend');
+ax2L = axes('Parent', fig2L, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
+    'Position', [0 0 1 1]);
+hold(ax2L, 'on');
+h2L = gobjects(4, 1);
+h2L(1) = fill(ax2L, nan, nan, [0.75, 0.85, 0.95], 'EdgeColor', 'none', ...
+    'FaceAlpha', 0.55, 'DisplayName', band_label);
+h2L(2) = plot(ax2L, nan, nan, 'k-', 'LineWidth', 1.8, 'DisplayName', 'True f');
+h2L(3) = plot(ax2L, nan, nan, 'b-', 'LineWidth', 1.5, 'DisplayName', 'GP mean');
+h2L(4) = plot(ax2L, nan, nan, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
+    'DisplayName', 'Train y');
+lgd2 = legend(ax2L, h2L, 'Orientation', 'horizontal');
+lgd2.FontSize = 14;
+lgd2.ItemTokenSize = [20, 12];
+lgd2.Box = 'on';
+drawnow;
+fig2L.Units = 'pixels';
+lgd2.Units = 'pixels';
+lp2 = lgd2.Position;
+margin2 = 4;
+fig2L.Position(3:4) = [lp2(3) + 2 * margin2, lp2(4) + 2 * margin2];
+lgd2.Position = [margin2, margin2, lp2(3), lp2(4)];
+ax2L.Position = [0 0 1 1];
+drawnow;
+
+%% Figure 3: Noise SD comparison (legend separate)
+fig3 = figure('Color', 'w', 'Position', [80, 120, 700, 420], ...
     'Name', 'LG_het: noise SD');
-hold on; grid on;
-plot(x_grid, sigma_true, 'k-', 'LineWidth', 2.2, 'DisplayName', 'True \sigma(t) (NB-inspired)');
-plot(t_obs, sigma_true_obs, 'ks', 'MarkerFaceColor', 'k', 'MarkerSize', 7, ...
-    'DisplayName', 'True \sigma at t_{obs}');
-plot(t_obs, sd_rep, 'kd', 'MarkerSize', 7, 'LineWidth', 1.2, ...
-    'DisplayName', 'Empirical replicate SD');
-plot(x_grid, sigma_a, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
-plot(x_grid, sigma_b, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
-plot(x_grid, sigma_c, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
-plot(x_grid, sigma_d, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
-plot(x_grid, sigma_e, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
-xlabel('t'); ylabel('\sigma_n(t)');
-title('Observation noise SD: NB-inspired truth vs models');
-legend('Location', 'best');
-set(gca, 'FontSize', 12);
+ax3 = axes('Parent', fig3);
+hold(ax3, 'on'); grid(ax3, 'on');
+plot(ax3, x_grid, sigma_true, 'k-', 'LineWidth', 2.2, ...
+    'DisplayName', 'True \sigma(t) (NB-inspired)');
+plot(ax3, x_grid, sigma_a, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
+plot(ax3, x_grid, sigma_b, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
+plot(ax3, x_grid, sigma_c, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
+plot(ax3, x_grid, sigma_d, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
+plot(ax3, x_grid, sigma_e, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
+xlabel(ax3, 't'); ylabel(ax3, '\sigma_n(t)');
+title(ax3, 'Observation noise SD: NB-inspired truth vs models');
+set(ax3, 'FontSize', 12);
+xlim(ax3, [t_min, t_max]);
+
+%% Standalone shared legend for Figure 3 (for LaTeX / Inkscape)
+fig3L = figure('Color', 'w', 'Position', [100, 100, 1000, 80], ...
+    'Name', 'LG_het: noise SD shared legend');
+ax3L = axes('Parent', fig3L, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
+    'Position', [0 0 1 1]);
+hold(ax3L, 'on');
+h3L = gobjects(6, 1);
+h3L(1) = plot(ax3L, nan, nan, 'k-', 'LineWidth', 2.2, ...
+    'DisplayName', 'True \sigma(t) (NB-inspired)');
+h3L(2) = plot(ax3L, nan, nan, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
+h3L(3) = plot(ax3L, nan, nan, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
+h3L(4) = plot(ax3L, nan, nan, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
+h3L(5) = plot(ax3L, nan, nan, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
+h3L(6) = plot(ax3L, nan, nan, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
+lgd3 = legend(ax3L, h3L, 'Orientation', 'horizontal', 'NumColumns', 6);
+lgd3.FontSize = 14;
+lgd3.ItemTokenSize = [24, 12];
+lgd3.Box = 'on';
+drawnow;
+fig3L.Units = 'pixels';
+lgd3.Units = 'pixels';
+lp3 = lgd3.Position;
+margin3 = 4;
+fig3L.Position(3:4) = [lp3(3) + 2 * margin3, lp3(4) + 2 * margin3];
+lgd3.Position = [margin3, margin3, lp3(3), lp3(4)];
+ax3L.Position = [0 0 1 1];
+drawnow;
+
+% %% Save Figure 2 panels, Figure 3, and shared legends as EPS
+% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+%     'results', 'plots', 'Paper Draft 2', 'Log Growth');
+% if ~exist(plot_dir, 'dir')
+%     mkdir(plot_dir);
+% end
+% tab_list = {tab_a, tab_b, tab_c, tab_d, tab_e};
+% ax_list  = {ax_a, ax_b, ax_c, ax_d, ax_e};
+% name_list = {'LG_het_A_Homo_GP.eps', 'LG_het_B_Oracle_Hetero.eps', ...
+%     'LG_het_C_Empirical.eps', 'LG_het_D_NLML_per_time.eps', 'LG_het_E_VHGPR.eps'};
+% for i = 1:numel(tab_list)
+%     tg.SelectedTab = tab_list{i};
+%     ax_list{i}.Toolbar.Visible = 'off';
+%     disableDefaultInteractivity(ax_list{i});
+%     drawnow;
+%     out_path = fullfile(plot_dir, name_list{i});
+%     exportgraphics(ax_list{i}, out_path, 'ContentType', 'image');
+%     fprintf('Saved %s\n', out_path);
+% end
+% legend2_path = fullfile(plot_dir, 'LG_het_traj_legend.eps');
+% exportgraphics(fig2L, legend2_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend2_path);
+%
+% ax3.Toolbar.Visible = 'off';
+% disableDefaultInteractivity(ax3);
+% drawnow;
+% noise_path = fullfile(plot_dir, 'LG_het_noise_SD.eps');
+% exportgraphics(ax3, noise_path, 'ContentType', 'image');
+% fprintf('Saved %s\n', noise_path);
+% legend3_path = fullfile(plot_dir, 'LG_het_noise_legend.eps');
+% exportgraphics(fig3L, legend3_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend3_path);
 
 fprintf('\nDone.\n');
 
@@ -288,10 +375,10 @@ plot(ax, xg, f_true, 'k-', 'LineWidth', 1.8, 'DisplayName', 'True f');
 plot(ax, xg, fmu, 'b-', 'LineWidth', 1.5, 'DisplayName', 'GP mean');
 plot(ax, x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 4, ...
     'DisplayName', 'Train y');
-xlabel(ax, 't'); ylabel(ax, 'N(t)');
-title(ax, title_str, 'Interpreter', 'none', 'FontSize', 16);
+xlabel(ax, 't', 'FontSize', 18);
+ylabel(ax, 'N(t)', 'FontSize', 18);
+title(ax, title_str, 'Interpreter', 'none', 'FontSize', 18);
 xlim(ax, [xg(1), xg(end)]);
-legend(ax, 'Location', 'southeast');
-set(ax, 'FontSize', 12);
+set(ax, 'FontSize', 18);
 ax.Layer = 'top';
 end
