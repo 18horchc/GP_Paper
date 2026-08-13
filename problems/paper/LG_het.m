@@ -1,12 +1,14 @@
-% LG_het.m — Logistic growth heteroscedastic GP: Models A–D (single run).
+% LG_het.m — Logistic growth heteroscedastic GP: Models A–E (single run).
 % Design: t in [0,12], times {0,1,2,3,4,5,6,8,10,12}, R=5 replicates.
 % Noise: sigma(t) = sigma_min + A*exp(-(t-tc)^2/(2w^2)) (unreliable middle).
 %   A: homoscedastic GP (learn one sn)
 %   B: oracle hetero diag(R) via gp_seiso_hetero_noise
 %   C: empirical replicate s_i^2 on diagonal
-%   D: VHGPR (Lazaro-Gredilla & Titsias, ICML 2011)
+%   D: learn one sn per unique time by NLML (with ell, sf)
+%   E: VHGPR (Lazaro-Gredilla & Titsias, ICML 2011)
 % All models use squared-exponential kernels.
-% Requires GPML, gp_seiso_hetero_noise, vhgpr_fit_predict (+ problems/vhgpr/).
+% Requires GPML, gp_seiso_hetero_noise, gp_seiso_nlml_time_noise,
+% vhgpr_fit_predict (+ problems/vhgpr/).
 clear; clc; close all;
 
 %% Logistic growth parameters
@@ -66,6 +68,9 @@ addpath(fileparts(fileparts(mfilename('fullpath'))));  % problems/
 if ~exist('gp_seiso_hetero_noise', 'file')
     addpath("C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Bio_Inf_GP_Code\problems");
 end
+if ~exist('gp_seiso_nlml_time_noise', 'file')
+    error('LG_het:MissingTimeNoise', 'gp_seiso_nlml_time_noise.m not found on path.');
+end
 if ~exist('vhgpr_fit_predict', 'file')
     error('LG_het:MissingVHGPR', 'vhgpr_fit_predict.m not found on path.');
 end
@@ -115,17 +120,37 @@ nlml_c = gp_seiso_hetero_noise('nlml', hyp_c, x_train, y_train, noise_var_c_tr);
 fprintf('C: ell=%.4g, sf=%.4g | NLML=%.4f\n', ...
     exp(hyp_c.cov(1)), exp(hyp_c.cov(2)), nlml_c);
 
-%% Model D: VHGPR
-fprintf('\n=== Model D: VHGPR ===\n');
+%% Model D: NLML-learned noise at each unique time
+fprintf('\n=== Model D: NLML per-time noise ===\n');
+nU = numel(t_unique);
+sn0_d = log(max(std(y_train) * 0.1, 1e-3));
+p0_d = [hyp0_cov; sn0_d * ones(nU, 1)];
+obj_d = @(p) gp_seiso_nlml_time_noise(p, x_train, y_train, t_unique);
+p_d = minimize(p0_d, obj_d, minimize_n);
+hyp_d = struct('mean', [], 'cov', p_d(1:2), 'lik', []);
+s2_d_unique = exp(2 * p_d(3:end));
+noise_var_d_tr = expand_unique_noise(x_train, t_unique, s2_d_unique);
+noise_var_d_te = nearest_noise_var(x_grid, t_unique, s2_d_unique);
+[~, ~, fmu_d, fs2_d] = gp_seiso_hetero_noise( ...
+    'pred', hyp_d, x_train, y_train, noise_var_d_tr, x_grid, noise_var_d_te);
+% Plot-only smooth sigma (fit still uses block-constant noise at unique times)
+sigma_d = exp(interp1(t_unique, 0.5 * log(s2_d_unique), x_grid, 'pchip', 'extrap'));
+nlml_d = gp_seiso_hetero_noise('nlml', hyp_d, x_train, y_train, noise_var_d_tr);
+fprintf('D: ell=%.4g, sf=%.4g | NLML=%.4f\n', ...
+    exp(hyp_d.cov(1)), exp(hyp_d.cov(2)), nlml_d);
+fprintf('D: learned sn at unique t = %s\n', mat2str(exp(p_d(3:end))', 4));
+
+%% Model E: VHGPR
+fprintf('\n=== Model E: VHGPR ===\n');
 vboth = vhgpr_fit_predict(x_train, y_train, x_grid, struct('iter', vhgpr_iter));
-fmu_d = vboth.fmu;
-fs2_d = vboth.fs2;
-sigma_d = vboth.sigma_n;
-fprintf('D: VHGPR done (iter=%d)\n', vhgpr_iter);
+fmu_e = vboth.fmu;
+fs2_e = vboth.fs2;
+sigma_e = vboth.sigma_n;
+fprintf('E: VHGPR done (iter=%d)\n', vhgpr_iter);
 
 %% Trajectory figure (one model per tab)
 fig = figure('Color', 'w', 'Position', [80, 80, 900, 560], ...
-    'Name', 'LG_het: logistic trajectories A-D');
+    'Name', 'LG_het: logistic trajectories A-E');
 tg = uitabgroup(fig);
 
 tab_a = uitab(tg, 'Title', 'A: Homo GP');
@@ -140,9 +165,13 @@ tab_c = uitab(tg, 'Title', 'C: Empirical s^2');
 ax_c = axes('Parent', tab_c);
 plot_traj(ax_c, x_grid, f_true, fmu_c, fs2_c, x_train, y_train, k_plot, 'C: empirical s^2');
 
-tab_d = uitab(tg, 'Title', 'D: VHGPR');
+tab_d = uitab(tg, 'Title', 'D: NLML per-time sn');
 ax_d = axes('Parent', tab_d);
-plot_traj(ax_d, x_grid, f_true, fmu_d, fs2_d, x_train, y_train, k_plot, 'D: VHGPR');
+plot_traj(ax_d, x_grid, f_true, fmu_d, fs2_d, x_train, y_train, k_plot, 'D: NLML per-time noise');
+
+tab_e = uitab(tg, 'Title', 'E: VHGPR');
+ax_e = axes('Parent', tab_e);
+plot_traj(ax_e, x_grid, f_true, fmu_e, fs2_e, x_train, y_train, k_plot, 'E: VHGPR');
 
 %% Noise SD comparison
 figure('Color', 'w', 'Position', [80, 120, 700, 420], ...
@@ -152,7 +181,8 @@ plot(x_grid, sigma_true, 'k-', 'LineWidth', 2.2, 'DisplayName', 'True \sigma_n(t
 plot(x_grid, sigma_a, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
 plot(x_grid, sigma_b, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
 plot(x_grid, sigma_c, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
-plot(x_grid, sigma_d, 'b-', 'LineWidth', 1.5, 'DisplayName', 'D (VHGPR)');
+plot(x_grid, sigma_d, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
+plot(x_grid, sigma_e, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
 xlabel('t'); ylabel('\sigma_n(t)');
 title('Observation noise SD: true vs models');
 legend('Location', 'best');
@@ -161,6 +191,16 @@ set(gca, 'FontSize', 12);
 fprintf('\nDone.\n');
 
 %% ==================== Local functions ====================
+function noise_var = expand_unique_noise(x, t_unique, var_unique)
+x = x(:);
+t_unique = t_unique(:);
+var_unique = var_unique(:);
+noise_var = zeros(size(x));
+for i = 1:numel(t_unique)
+    noise_var(abs(x - t_unique(i)) < 1e-12) = var_unique(i);
+end
+end
+
 function [noise_var, s2_unique] = empirical_replicate_noise(x, y, t_unique)
 x = x(:); y = y(:); t_unique = t_unique(:);
 n = numel(x);
