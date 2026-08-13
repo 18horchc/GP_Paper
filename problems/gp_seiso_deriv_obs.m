@@ -34,8 +34,7 @@ end
 if nargin < 8
     noise_var = [];
 end
-[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
-L = chol(Ky, 'lower');
+[L, ~, z, nTot] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 alpha = L' \ (L \ z);
 nlml = 0.5 * (z' * alpha) + sum(log(diag(L))) + 0.5 * nTot * log(2 * pi);
 
@@ -77,18 +76,16 @@ end
 end
 
 function nlml = nlml_value(hyp, x, y, x_d, y_d, sn_deriv, noise_var)
-[Ky, z, nTot] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
-L = chol(Ky, 'lower');
+[L, ~, z, nTot] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 alpha = L' \ (L \ z);
 nlml = 0.5 * (z' * alpha) + sum(log(diag(L))) + 0.5 * nTot * log(2 * pi);
 end
 
 function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
-[Ky, z, ~, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
+[L, ~, z, ~, ell, sf2, sn2] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 x = x(:); x_d = x_d(:); xs = xs(:);
 nS = numel(xs);
 
-L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
 
 K_xs_x = seiso_Kff(xs, x, ell, sf2);
@@ -106,11 +103,10 @@ ys2 = fs2 + sn2;
 end
 
 function [m_deriv, s2_deriv] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
-[Ky, z, ~, ell, sf2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
+[L, ~, z, ~, ell, sf2] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
 x = x(:); x_d = x_d(:); xs = xs(:);
 nS = numel(xs);
 
-L = chol(Ky, 'lower');
 alpha = L' \ (L \ z);
 
 K_d_x = seiso_Kdf(xs, x, ell, sf2);
@@ -125,10 +121,27 @@ m_deriv = m_deriv(:);
 s2_deriv = s2_deriv(:);
 end
 
+function [L, Ky, z, nTot, ell, sf2, sn2] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var)
+% Build Ky with relative jitter; escalate jitter until Cholesky succeeds.
+jitter_scale = 1;
+for attempt = 1:12
+    [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var, jitter_scale);
+    [L, p] = chol(Ky, 'lower');
+    if p == 0
+        return;
+    end
+    jitter_scale = jitter_scale * 10;
+end
+error('gp_seiso_deriv_obs:CholFailed', ...
+    'Cholesky failed after adaptive jitter escalation (final scale=%g).', jitter_scale);
+end
 
-function [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var)
+function [Ky, z, nTot, ell, sf2, sn2] = build_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var, jitter_scale)
 if nargin < 7
     noise_var = [];
+end
+if nargin < 8
+    jitter_scale = 1;
 end
 x = x(:); y = y(:); x_d = x_d(:); y_d = y_d(:);
 n = numel(x); m = numel(x_d);
@@ -138,7 +151,6 @@ ell = exp(hyp.cov(1));
 sf2 = exp(2 * hyp.cov(2));
 sn2 = exp(2 * hyp.lik(1));
 sn_deriv2 = sn_deriv^2;
-jitter = 1e-10;
 
 %building cov blocks
 K_ff = seiso_Kff(x, x, ell, sf2);
@@ -147,6 +159,18 @@ K_df = seiso_Kdf(x_d, x, ell, sf2);
 K_dd = seiso_Kdd(x_d, x_d, ell, sf2);
 
 K_aug = [K_ff, K_fd; K_df, K_dd];
+diag_mean = mean(diag(K_aug));
+if ~isfinite(diag_mean) || diag_mean <= 0
+    diag_mean = 1;
+end
+jitter0 = max(1e-10, 1e-12 * diag_mean);
+jitter = jitter_scale * jitter0;
+% Cap escalated jitter around ~1e-4 relative to kernel scale
+max_jitter = max(1e-4, 1e-4 * diag_mean);
+if jitter > max_jitter
+    jitter = max_jitter;
+end
+
 if isempty(noise_var)
     sn_obs = sn2 * ones(n, 1);
 else
