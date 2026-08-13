@@ -1,6 +1,8 @@
 % LG_het.m — Logistic growth heteroscedastic GP: Models A–E (single run).
-% Design: t in [0,12], times {0,1,2,3,4,5,6,8,10,12}, R=5 replicates.
-% Noise: sigma(t) = sigma_min + A*exp(-(t-tc)^2/(2w^2)) (unreliable middle).
+% Design: observation times with nRep=5 replicates.
+% Latent truth mu(t) = K / (1+exp(-r(t-t0))).
+% Observations: y_ij ~ N(mu_i, sigma_i^2) with NB-inspired Var = mu + alpha*mu^2
+% (Gaussian likelihood only; not sampled from a negative-binomial distribution).
 %   A: homoscedastic GP (learn one sn)
 %   B: oracle hetero diag(R) via gp_seiso_hetero_noise
 %   C: empirical replicate s_i^2 on diagonal
@@ -16,39 +18,60 @@ K  = 1000;
 r  = 0.6;
 t0 = 5;
 t_min = 0;
-t_max = 14; %12;
+t_max = 14;
 
 logistic = @(t) K ./ (1 + exp(-r .* (t - t0)));
 
-%% Heteroscedastic bump noise (peak in middle)
-sigma_min = 25;
-A_bump = 125;
-tc = 5; %5;
-w_bump = 1.5;
-sigma_fn = @(t) sigma_min + A_bump .* exp(-(t - tc).^2 ./ (2 * w_bump^2));
+%% NB-inspired heteroscedastic Gaussian design
+t_unique = [0;2;4;6;8;10;12;14];
+t_obs = t_unique;
+alpha = 0.01;
+nRep  = 5;
+R_rep = nRep;   % alias used by fprintf / models
 
-%% Training data
-t_unique = [0; 1; 2; 3; 4; 5; 10; 11; 14];
-%t_unique = [0;1;2;3;4;7;9;14];
-R_rep = 5;
-rng(100);
-x_train = repmat(t_unique, R_rep, 1);
-f_train = logistic(x_train);
-sn_train = sigma_fn(x_train);
-y_train = f_train + sn_train .* randn(size(x_train));
+rng(42);
+mu_true        = logistic(t_obs);
+var_true       = mu_true + alpha .* mu_true.^2;
+sigma_true_obs = sqrt(var_true);
 
+Y = zeros(numel(t_obs), nRep);
+for i = 1:numel(t_obs)
+    Y(i,:) = mu_true(i) + sigma_true_obs(i) .* randn(1, nRep);
+end
+
+n_neg = sum(Y(:) < 0);
+fprintf('Negative observations: %d / %d (no clipping applied)\n', n_neg, numel(Y));
+if n_neg > 0
+    warning('LG_het:NegativeObs', ...
+        '%d negative y values; consider reducing alpha (currently %.4g).', n_neg, alpha);
+end
+
+mean_rep        = mean(Y, 2);
+var_rep         = var(Y, 0, 2);
+sd_rep          = sqrt(var_rep);
+var_mean_true   = var_true ./ nRep;
+sigma_mean_true = sqrt(var_mean_true);
+
+% GP training vectors: each t appears nRep times, responses row-major by replicate
+x_train = repelem(t_obs, nRep);
+y_train = reshape(Y.', [], 1);
+var_train_true   = repelem(var_true, nRep);
+sigma_train_true = repelem(sigma_true_obs, nRep);
+
+assert(size(Y, 2) == 5, 'Expected nRep=5 columns in Y.');
+[~, i_peak] = max(sigma_true_obs);
 fprintf('Logistic growth: K=%.0f, r=%.3g, t0=%.3g, t in [%.0f, %.0f]\n', ...
     K, r, t0, t_min, t_max);
-fprintf('Design: Nu=%d unique times, R=%d replicates (N=%d)\n', ...
-    numel(t_unique), R_rep, numel(x_train));
-fprintf('Bump noise: sigma_min=%.0f, A=%.0f, tc=%.3g, w=%.3g\n', ...
-    sigma_min, A_bump, tc, w_bump);
+fprintf('NB-inspired Gaussian: Nu=%d times, nRep=%d, alpha=%.4g (N=%d obs)\n', ...
+    numel(t_obs), nRep, alpha, numel(x_train));
+fprintf('True sigma largest at t=%.3g, max sigma=%.4g (Var=mu+alpha*mu^2)\n', ...
+    t_obs(i_peak), sigma_true_obs(i_peak));
 
-%% Ground truth on plot grid
+%% Ground truth on plot grid + oracle noise for Model B
 x_grid = linspace(t_min, t_max, 500)';
 f_true = logistic(x_grid);
-sigma_true = sigma_fn(x_grid);
-noise_var_oracle_tr = sn_train.^2;
+sigma_true = sqrt(f_true + alpha .* f_true.^2);
+noise_var_oracle_tr = var_train_true;
 noise_var_oracle_te = sigma_true.^2;
 
 %% GPML / helpers path
@@ -148,6 +171,22 @@ fs2_e = vboth.fs2;
 sigma_e = vboth.sigma_n;
 fprintf('E: VHGPR done (iter=%d)\n', vhgpr_iter);
 
+%% Data-generation check: truth + replicates + empirical mean ± SD
+figure('Color', 'w', 'Position', [60, 80, 720, 420], ...
+    'Name', 'LG_het: NB-inspired data check');
+hold on; grid on;
+plot(x_grid, f_true, 'k-', 'LineWidth', 2.0, 'DisplayName', 'True \mu(t)');
+plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 4, ...
+    'DisplayName', 'Replicates y_{ij}');
+errorbar(t_obs, mean_rep, sd_rep, 'b-', 'LineWidth', 1.4, 'Marker', 's', ...
+    'MarkerFaceColor', 'b', 'MarkerSize', 6, ...
+    'DisplayName', 'Replicate mean \pm emp. SD');
+xlabel('t'); ylabel('\mu(t) / observations');
+title(sprintf('NB-inspired hetero Gaussian (\\alpha=%.3g, nRep=%d)', alpha, nRep));
+legend('Location', 'southeast');
+set(gca, 'FontSize', 12);
+xlim([t_min, t_max]);
+
 %% Trajectory figure (one model per tab)
 fig = figure('Color', 'w', 'Position', [80, 80, 900, 560], ...
     'Name', 'LG_het: logistic trajectories A-E');
@@ -177,14 +216,18 @@ plot_traj(ax_e, x_grid, f_true, fmu_e, fs2_e, x_train, y_train, k_plot, 'E: VHGP
 figure('Color', 'w', 'Position', [80, 120, 700, 420], ...
     'Name', 'LG_het: noise SD');
 hold on; grid on;
-plot(x_grid, sigma_true, 'k-', 'LineWidth', 2.2, 'DisplayName', 'True \sigma_n(t)');
+plot(x_grid, sigma_true, 'k-', 'LineWidth', 2.2, 'DisplayName', 'True \sigma(t) (NB-inspired)');
+plot(t_obs, sigma_true_obs, 'ks', 'MarkerFaceColor', 'k', 'MarkerSize', 7, ...
+    'DisplayName', 'True \sigma at t_{obs}');
+plot(t_obs, sd_rep, 'kd', 'MarkerSize', 7, 'LineWidth', 1.2, ...
+    'DisplayName', 'Empirical replicate SD');
 plot(x_grid, sigma_a, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
 plot(x_grid, sigma_b, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
 plot(x_grid, sigma_c, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
 plot(x_grid, sigma_d, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
 plot(x_grid, sigma_e, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
 xlabel('t'); ylabel('\sigma_n(t)');
-title('Observation noise SD: true vs models');
+title('Observation noise SD: NB-inspired truth vs models');
 legend('Location', 'best');
 set(gca, 'FontSize', 12);
 
