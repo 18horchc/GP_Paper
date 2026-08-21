@@ -1,7 +1,8 @@
 % microglia.m — Independent GPML GPs for M1/M2 across kernels.
-% Kernels: RBF (SE), Matern 3/2, Matern 5/2, Neural Network (covNNone).
-% Figure: outer tabs = full / averaged; inner tabs = kernel.
+% Kernels: SE, Matern 3/2, Matern 5/2, Neural Network (covNNone).
+% Figure 1: outer tabs = full / averaged; inner tabs = kernel.
 % M1 and M2 plotted on the same axes. Day 5 included in both phenotypes.
+% Shared Full/Averaged legends and per-panel EPS exports follow LV_Periodic.m.
 
 clear; close all; clc;
 
@@ -59,8 +60,8 @@ datasets = struct( ...
     'dataM2', {dataM2(:), datapointsM2(:)});
 
 kernels = struct( ...
-    'name',  {'rbf', 'matern32', 'matern52', 'nn'}, ...
-    'title', {'RBF', 'Matern 3/2', 'Matern 5/2', 'NN'}, ...
+    'name',  {'se', 'matern32', 'matern52', 'nn'}, ...
+    'title', {'SE', 'Matern 3/2', 'Matern 5/2', 'NN'}, ...
     'cov',   {@covSEiso, {@covMaterniso, 3}, {@covMaterniso, 5}, @covNNone});
 
 %% ===== GPML setup =====
@@ -82,7 +83,7 @@ likfunc  = @likGauss;
 inffunc  = @infGaussLik;
 
 fprintf('=== Microglia: independent GP kernel comparison ===\n');
-fprintf('Kernels: RBF | Matern 3/2 | Matern 5/2 | NN\n');
+fprintf('Kernels: SE | Matern 3/2 | Matern 5/2 | NN\n');
 
 %% ===== Fit =====
 results = struct([]);
@@ -109,12 +110,21 @@ for didx = 1:numel(datasets)
 end
 
 %% ===== Tabbed figure: outer = dataset, inner = kernel =====
+% Per-panel legends omitted; standalone shared legends (Full / Averaged) are
+% exported for LaTeX / Inkscape, following LV_Periodic.m conventions.
 col_M1 = [0.10, 0.10, 0.10];
 col_M2 = [0.85, 0.16, 0.16];
+band_label = '95% CI';
 
 fig = figure('Color', 'w', 'Position', [60, 60, 1240, 900], ...
     'Name', 'Microglia: GP kernel comparison (M1 & M2)');
 tg_outer = uitabgroup(fig);
+
+n_panels = numel(results) * numel(kernels);
+ax_list  = gobjects(n_panels, 1);
+tab_list = gobjects(n_panels, 1);
+fname_list = cell(n_panels, 1);
+pidx = 0;
 
 for didx = 1:numel(results)
     ds = results(didx);
@@ -126,20 +136,56 @@ for didx = 1:numel(results)
         tab_k = uitab(tg_inner, 'Title', kf.title);
         ax = axes('Parent', tab_k);
         ax.Layer = 'top';
-        hold on; grid on;
+        ax.FontSize = 24;
+        hold(ax, 'on'); grid(ax, 'on');
         fit = kf.fit;
-        plot_phenotype(ax, tgrid, fit.M1, ds.timeM1, ds.dataM1, col_M1, 'M1');
-        plot_phenotype(ax, tgrid, fit.M2, ds.timeM2, ds.dataM2, col_M2, 'M2');
-        xlabel('Time (days)');
-        ylabel('cells/mm^2');
-        title(sprintf('%s — %s', ds.title, kf.title), 'Interpreter', 'none');
-        xlim([0, 14]);
+        plot_phenotype(ax, tgrid, fit.M1, ds.timeM1, ds.dataM1, col_M1, 'M1', band_label);
+        plot_phenotype(ax, tgrid, fit.M2, ds.timeM2, ds.dataM2, col_M2, 'M2', band_label);
+        xlabel(ax, 'Time (days)', 'FontSize', 24);
+        ylabel(ax, 'cells/mm^2', 'FontSize', 24);
+        title(ax, sprintf('%s — %s', ds.title, kf.title), 'Interpreter', 'none', 'FontSize', 24);
+        xlim(ax, [0, 14]);
         ylim_auto_from_fit(ax, fit.M1, fit.M2, ds.dataM1, ds.dataM2);
-        legend('Location', 'northwest', 'FontSize', 8);
+
+        pidx = pidx + 1;
+        ax_list(pidx) = ax;
+        tab_list(pidx) = tab_k;
+        fname_list{pidx} = sprintf('Microglia_%s_%s.eps', ds.title, ...
+            regexprep(kf.title, '[^A-Za-z0-9]+', ''));
     end
 end
 
-fprintf('\nDone.\n');
+%% ===== Standalone shared legends (Full / Averaged) =====
+figL_full = make_shared_legend(col_M1, col_M2, band_label, ...
+    'Microglia Full shared legend');
+figL_avg  = make_shared_legend(col_M1, col_M2, band_label, ...
+    'Microglia Averaged shared legend');
+
+% %% ===== Save each panel and both shared legends as EPS =====
+% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+%     'results', 'plots', 'Paper Draft 2', 'Microglia', 'Kernels');
+% if ~exist(plot_dir, 'dir')
+%     mkdir(plot_dir);
+% end
+% for i = 1:n_panels
+%     % Select the containing outer/inner tabs so the axes are visible for export
+%     tg_outer.SelectedTab = tab_list(i).Parent.Parent;
+%     tab_list(i).Parent.SelectedTab = tab_list(i);
+%     ax_list(i).Toolbar.Visible = 'off';
+%     disableDefaultInteractivity(ax_list(i));
+%     drawnow;
+%     out_path = fullfile(plot_dir, fname_list{i});
+%     exportgraphics(ax_list(i), out_path, 'ContentType', 'image');
+%     fprintf('Saved %s\n', out_path);
+% end
+% legend_full_path = fullfile(plot_dir, 'Microglia_Full_legend.eps');
+% exportgraphics(figL_full, legend_full_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend_full_path);
+% legend_avg_path = fullfile(plot_dir, 'Microglia_Averaged_legend.eps');
+% exportgraphics(figL_avg, legend_avg_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+% fprintf('Saved %s\n', legend_avg_path);
+% 
+% fprintf('\nDone.\n');
 
 %% ===== Local functions =====
 
@@ -207,16 +253,47 @@ fprintf('[%s | %s] NLML=%.4f | ell_M1=%.4f, ell_M2=%.4f | sf_M1=%.4f, sf_M2=%.4f
     report.sn_M1, report.sn_M2);
 end
 
-function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, name)
+function figL = make_shared_legend(col_M1, col_M2, band_label, fig_name)
+% Standalone horizontal legend for LaTeX / Inkscape (LV_Periodic convention).
+figL = figure('Color', 'w', 'Position', [100, 100, 900, 80], 'Name', fig_name);
+axL = axes('Parent', figL, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
+    'Position', [0 0 1 1]);
+hold(axL, 'on');
+hL = gobjects(6, 1);
+hL(1) = fill(axL, nan, nan, col_M1, 'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
+    'DisplayName', sprintf('M1 %s', band_label));
+hL(2) = plot(axL, nan, nan, '--', 'Color', col_M1, 'LineWidth', 2, ...
+    'DisplayName', 'M1 GP Mean');
+hL(3) = plot(axL, nan, nan, 'o', 'Color', col_M1, 'MarkerFaceColor', col_M1, ...
+    'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'M1 Obs Data');
+hL(4) = fill(axL, nan, nan, col_M2, 'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
+    'DisplayName', sprintf('M2 %s', band_label));
+hL(5) = plot(axL, nan, nan, '--', 'Color', col_M2, 'LineWidth', 2, ...
+    'DisplayName', 'M2 GP Mean');
+hL(6) = plot(axL, nan, nan, 'o', 'Color', col_M2, 'MarkerFaceColor', col_M2, ...
+    'MarkerEdgeColor', 'k', 'MarkerSize', 5, 'DisplayName', 'M2 Obs Data');
+lgd = legend(axL, hL, 'Orientation', 'horizontal', 'NumColumns', 3);
+lgd.FontSize = 16;
+lgd.ItemTokenSize = [20, 12];
+drawnow;
+figL.Units = 'pixels';
+lgd.Units = 'pixels';
+lp = lgd.Position;
+margin = 6;
+figL.Position(3:4) = [lp(3) + 2 * margin, lp(4) + 2 * margin];
+lgd.Position = [margin, margin, lp(3), lp(4)];
+end
+
+function plot_phenotype(ax, tgrid, fit, t_data, y_data, col, name, band_label)
 tg = tgrid(:)';
 fill(ax, [tg, fliplr(tg)], [fit.hi(:)', fliplr(fit.lo(:)')], col, ...
     'EdgeColor', 'none', 'FaceAlpha', 0.15, ...
-    'DisplayName', sprintf('%s band', name));
+    'DisplayName', sprintf('%s %s', name, band_label));
 plot(ax, tgrid, fit.mu, '--', 'Color', col, 'LineWidth', 2, ...
-    'DisplayName', sprintf('%s mean', name));
+    'DisplayName', sprintf('%s GP Mean', name));
 scatter(ax, t_data, y_data, 36, 'filled', ...
     'MarkerFaceColor', col, 'MarkerEdgeColor', 'k', ...
-    'DisplayName', sprintf('%s data', name));
+    'DisplayName', sprintf('%s Obs Data', name));
 end
 
 function ylim_auto_from_fit(ax, fitM1, fitM2, dataM1, dataM2)
