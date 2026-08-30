@@ -1,16 +1,17 @@
 % Paper figure: Michaelis-Menten GP with virtual observations and Pensoneault
-% upper bound + data-fidelity tube.
+% upper bound, monotonicity (f' >= 0), and data-fidelity tube.
 % Tabs:
 %   1. Baseline SE-GP
 %   2. Virtual function-value observations only
-%   3. Virtual derivative observations only
-%   4. Function VOs + derivative VOs (no bound)
+%   3. Solak deriv + data-fidelity tube
+%   4. Function VOs + Solak deriv + tube
 %   5. Upper bound + data-fidelity tube
 %   6. Function VOs + upper bound + tube
-%   7. Derivative VOs + upper bound + tube
-%   8. Derivative VOs + S=0 VO + upper bound + tube
-%   9. Function VOs + derivative VOs + upper bound + tube
-% eta = 2.2% => k from erfinv.
+%   7. Solak deriv + upper bound + tube
+%   8. S=0 VO + Solak deriv + upper bound + tube
+%   9. Function VOs + Solak deriv + upper bound + tube
+% Currently disabled (commented out): saturation interpolant VO; Pensoneault f'>=0.
+% eta from erfinv.
 clear; clc; close all;
 
 %% MM parameters
@@ -35,19 +36,20 @@ fprintf('Synthetic data: n=%d on [0, %.1f], homoscedastic noise sigma_n = %.4f (
 x_obs = x_train(:);
 y_obs = y_train(:);
 
-%% Fixed observation noises (same as MM_Obs_Figure; not optimized)
+%% Fixed observation noises (not optimized)
 sigma_data = noise_sd_true;                 % known assay noise
 sigma_VO_zero = 0.8 * noise_sd_true;        % tight soft-hard anchor at v(0)=0
-sn_deriv = 0.1; %0.2 * noise_sd_true;             % Solak soft Gaussian derivative noise
 
 %% Virtual function-value observations (heteroscedastic VO)
 x_virt_zero = 0;
 y_virt_zero = 0;
-x_virt_150 = 150;
-y_virt_150 = 86.8813;
+% Saturation VO (noisy linear interpolant at midpoint of S=90 and S=200):
+% x_virt_mid = 0.5 * (90 + 200);
+% y_virt_mid = interp1([90; 200], [y_train(x_train == 90); y_train(x_train == 200)], ...
+%     x_virt_mid, 'linear');
 
-x_virt = [x_virt_zero; x_virt_150];
-y_virt = [y_virt_zero; y_virt_150];
+x_virt = x_virt_zero;              % [x_virt_zero; x_virt_mid]
+y_virt = y_virt_zero;              % [y_virt_zero; y_virt_mid]
 
 x_aug = [x_obs; x_virt];
 y_aug = [y_obs; y_virt];
@@ -58,15 +60,15 @@ x_aug0 = [x_obs; x_virt_zero];
 y_aug0 = [y_obs; y_virt_zero];
 noise_var_aug0 = [sigma_data^2 * ones(numel(y_obs), 1); sigma_VO_zero^2];
 
-fprintf('Virtual obs: v(0)=0 | v(%.0f)=%.4f (sigma=%.4g each)\n', ...
-    x_virt_150, y_virt_150, sigma_VO_zero);
+fprintf('Virtual obs: v(0)=0 (sigma=%.4g); saturation interpolant VO commented out\n', ...
+    sigma_VO_zero);
 
-%% Virtual derivative observations (Solak; fixed separate sn_deriv)
-x_deriv = linspace(100, 200, 5)';
-y_deriv = 0.02 * ones(numel(x_deriv), 1);
-
-fprintf('Virtual deriv obs: %d sites on [%.0f, %.0f] | y_deriv=%.2g | sn_deriv=%.4g (fixed)\n', ...
-    numel(x_deriv), x_deriv(1), x_deriv(end), y_deriv(1), sn_deriv);
+%% Solak virtual derivative observations
+x_deriv = [150; 175; 200];
+y_deriv = zeros(size(x_deriv));
+sn_deriv = 0.1; %0.2 * noise_sd_true;  
+fprintf('Solak deriv obs: %d sites at S=[%s], v''=0 | sn_deriv=%.4g\n', ...
+    numel(x_deriv), strjoin(compose('%.0f', x_deriv), ', '), sn_deriv);
 
 %% Ground truth curve
 x_grid = linspace(0, x_max, 500);
@@ -79,6 +81,7 @@ n_constraint = 800;
 X_c = linspace(0, x_max, n_constraint)';
 y_max = Vmax;
 epsilon = 2*noise_sd_true;   % data fidelity: |y - y*(x)| <= epsilon at training pts
+use_mono = false;            % Pensoneault f'(S)>=0 bound (set true to restore)
 
 %% GPML setup
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
@@ -111,130 +114,140 @@ inffunc  = @infGaussLik;
 x_col = x_train(:);
 y_col = y_train(:);
 
-%% Baseline / naive GP (sigma_n fixed at noise_sd_true; optimize ell, sf only)
-sn_fixed = log(noise_sd_true);
-fprintf('Optimizing baseline (ell, sf; sigma_n fixed at %.4f)...\n', noise_sd_true);
-obj_unc = @(hyp_cov) gp_nlml_cov_only(hyp_cov, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-hyp_cov_unc = minimize(hyp.cov, obj_unc, -100);
-hyp_unc = struct('mean', [], 'cov', hyp_cov_unc(:), 'lik', sn_fixed);
-nlml_unc = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
-theta_unc = hyp_unc.cov(:);
-
 hyp_lb = log([ell_bounds_lo; sf_bounds(1)]);
 hyp_ub = log([ell_ub; sf_bounds(2)]);
-hyp_tpl = hyp_unc;
-objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+sn_fixed = log(noise_sd_true);
+hyp_tpl = struct('mean', [], 'cov', hyp.cov(:), 'lik', sn_fixed);
+nC = numel(X_c);
+
 opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
     'EnableFeasibilityMode', true, 'Display', 'off', ...
     'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 nTry = 2000;
 nMultistart = 10;
-theta_unc_box = min(max(theta_unc, hyp_lb), hyp_ub);
 
 fprintf('\neta = %.3g%% | k = %.4f | epsilon = %.4g | X_c: %d points | random starts: %d\n', ...
     100 * eta, k, epsilon, numel(X_c), nTry);
 
+%% Baseline / naive GP (sigma_n fixed; 10 bounded NLML multistarts)
+fprintf('\nOptimizing baseline (ell, sf; sigma_n fixed at %.4f; %d multistarts)...\n', ...
+    noise_sd_true, nMultistart);
+obj_unc = @(theta) gp_nlml_cov_only(theta, sn_fixed, inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+[hyp_unc, nlml_unc] = fit_nlml_multistart(obj_unc, hyp_tpl, hyp.cov(:), ...
+    hyp_lb, hyp_ub, nMultistart, opts_pens, 40);
+theta_unc_box = min(max(hyp_unc.cov(:), hyp_lb), hyp_ub);
+objfun = @(theta) gp(theta_to_hyp(theta, hyp_tpl), inffunc, meanfunc, covfunc, likfunc, x_col, y_col);
+
 %% Virtual function-value observations only (heteroscedastic)
-fprintf('\nOptimizing Virtual Obs GP (ell, sf; heteroscedastic VO)...\n');
-obj_vo = @(h) gp_seiso_hetero_noise('nlml', h, x_aug, y_aug, noise_var_aug);
-hyp_vo = struct('mean', [], 'cov', hyp.cov, 'lik', []);
-hyp_vo = minimize(hyp_vo, obj_vo, -100);
-nlml_vo = obj_vo(hyp_vo);
+fprintf('\nOptimizing Virtual Obs GP (ell, sf; heteroscedastic VO; %d multistarts)...\n', nMultistart);
+hyp_tpl_vo = struct('mean', [], 'cov', hyp.cov(:), 'lik', sn_fixed);
+obj_vo = @(theta) gp_seiso_hetero_noise('nlml', theta_to_hyp(theta, hyp_tpl_vo), ...
+    x_aug, y_aug, noise_var_aug);
+[hyp_vo, nlml_vo] = fit_nlml_multistart(obj_vo, hyp_tpl_vo, hyp.cov(:), ...
+    hyp_lb, hyp_ub, nMultistart, opts_pens, 41);
 theta_vo_box = min(max(hyp_vo.cov(:), hyp_lb), hyp_ub);
 
-%% Virtual derivative observations only
-fprintf('\nOptimizing Virtual Deriv Obs GP (ell, sf; sn=%.4f, sn_deriv=%.4g)...\n', ...
-    sigma_data, sn_deriv);
-obj_deriv = @(hyp_cov) gp_seiso_deriv_obs_nlml_cov_only(hyp_cov, sn_fixed, ...
-    x_col, y_col, x_deriv, y_deriv, sn_deriv);
-hyp_cov_deriv = minimize(hyp.cov, obj_deriv, -100);
-hyp_deriv = struct('mean', [], 'cov', hyp_cov_deriv(:), 'lik', sn_fixed);
-nlml_deriv = obj_deriv(hyp_cov_deriv);
-theta_deriv_box = min(max(hyp_cov_deriv(:), hyp_lb), hyp_ub);
+%% v(0) VO template (tab 8); unconstrained v(0)+Solak warm start is below
+hyp_tpl_vo0 = struct('mean', [], 'cov', hyp.cov(:), 'lik', sn_fixed);
 
-%% VO + Solak deriv GP (unconstrained; warm start for combined bound fit)
-fprintf('\nOptimizing VO+deriv GP (ell, sf; hetero VO + sn_deriv=%.4g)...\n', sn_deriv);
-obj_voderiv = @(hyp_cov) gp_seiso_deriv_obs_nlml_cov_only(hyp_cov, sn_fixed, ...
+%% Solak deriv unconstrained warm starts
+hyp_tpl_d = struct('mean', [], 'cov', hyp.cov(:), 'lik', sn_fixed);
+fprintf('\nOptimizing Solak deriv GP (ell, sf; v''=0 at S=[%s], sn_deriv=%.4g; %d multistarts)...\n', ...
+    strjoin(compose('%.0f', x_deriv), ', '), sn_deriv, nMultistart);
+obj_d = @(theta) gp_seiso_deriv_obs_nlml_cov_only(theta, sn_fixed, ...
+    x_col, y_col, x_deriv, y_deriv, sn_deriv);
+[hyp_d_unc, nlml_d_unc] = fit_nlml_multistart(obj_d, hyp_tpl_d, hyp.cov(:), ...
+    hyp_lb, hyp_ub, nMultistart, opts_pens, 50);
+theta_d_box = min(max(hyp_d_unc.cov(:), hyp_lb), hyp_ub);
+
+fprintf('\nOptimizing VO+Solak deriv GP (ell, sf; %d multistarts)...\n', nMultistart);
+obj_vd = @(theta) gp_seiso_deriv_obs_nlml_cov_only(theta, sn_fixed, ...
     x_aug, y_aug, x_deriv, y_deriv, sn_deriv, noise_var_aug);
-hyp_cov_voderiv = minimize(hyp.cov, obj_voderiv, -100);
-hyp_voderiv = struct('mean', [], 'cov', hyp_cov_voderiv(:), 'lik', sn_fixed);
-nlml_voderiv = obj_voderiv(hyp_cov_voderiv);
-theta_voderiv_box = min(max(hyp_cov_voderiv(:), hyp_lb), hyp_ub);
+[hyp_vd_unc, nlml_vd_unc] = fit_nlml_multistart(obj_vd, hyp_tpl_vo, hyp.cov(:), ...
+    hyp_lb, hyp_ub, nMultistart, opts_pens, 51);
+theta_vd_box = min(max(hyp_vd_unc.cov(:), hyp_lb), hyp_ub);
+
+fprintf('\nOptimizing v(0)+Solak deriv GP (ell, sf; %d multistarts)...\n', nMultistart);
+obj_d0 = @(theta) gp_seiso_deriv_obs_nlml_cov_only(theta, sn_fixed, ...
+    x_aug0, y_aug0, x_deriv, y_deriv, sn_deriv, noise_var_aug0);
+[hyp_d0_unc, nlml_d0_unc] = fit_nlml_multistart(obj_d0, hyp_tpl_vo0, hyp.cov(:), ...
+    hyp_lb, hyp_ub, nMultistart, opts_pens, 52);
+theta_d0_box = min(max(hyp_d0_unc.cov(:), hyp_lb), hyp_ub);
+
+%% Solak deriv + data fidelity (no virtual obs)
+fprintf('\n=== Pensoneault GP (Solak deriv + data fidelity) ===\n');
+objfun_d = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_d), ...
+    x_col, y_col, x_deriv, y_deriv, [], sn_deriv, true, []);
+nonlcon_d = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_d, x_col, y_col, [], ...
+    X_c, k, y_max, epsilon, x_obs, y_obs, false, use_mono, x_deriv, y_deriv, sn_deriv);
+[hyp_d, nlml_d, exitflag_d, c_d] = fit_pens_constrained( ...
+    objfun_d, nonlcon_d, hyp_tpl_d, hyp_lb, hyp_ub, theta_d_box, opts_pens, nTry, nMultistart, 49);
+fprintf_c_blocks(c_d, nC, false, use_mono);
+
+%% Function VOs + Solak deriv + data fidelity
+fprintf('\n=== Pensoneault GP (VO + Solak deriv + data fidelity) ===\n');
+objfun_vo = @(theta) gp_seiso_hetero_noise('nlml', theta_to_hyp(theta, hyp_tpl_vo), ...
+    x_aug, y_aug, noise_var_aug);
+objfun_vd = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_vo), ...
+    x_aug, y_aug, x_deriv, y_deriv, [], sn_deriv, true, noise_var_aug);
+nonlcon_vo_d = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_vo, ...
+    x_aug, y_aug, noise_var_aug, X_c, k, y_max, epsilon, x_obs, y_obs, false, use_mono, ...
+    x_deriv, y_deriv, sn_deriv);
+[hyp_vo_d, nlml_vo_d, exitflag_vo_d, c_vo_d] = fit_pens_constrained( ...
+    objfun_vd, nonlcon_vo_d, hyp_tpl_vo, hyp_lb, hyp_ub, theta_vd_box, ...
+    opts_pens, nTry, nMultistart, 48);
+fprintf_c_blocks(c_vo_d, nC, false, use_mono);
 
 %% Upper bound + data fidelity (no virtual obs)
 fprintf('\n=== Pensoneault GP (upper bound at Vmax + data fidelity) ===\n');
-nonlcon_up = @(theta) pens_constraints_upper_fid(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x_col, y_col, X_c, k, y_max, epsilon);
+nonlcon_up = @(theta) pens_constraints_upper_mono(theta, hyp_tpl, x_col, y_col, [], ...
+    X_c, k, y_max, epsilon, x_obs, y_obs, true, false);
 [hyp_up, nlml_up, exitflag_up, c_up] = fit_pens_constrained( ...
     objfun, nonlcon_up, hyp_tpl, hyp_lb, hyp_ub, theta_unc_box, opts_pens, nTry, nMultistart, 42);
-nC = numel(X_c);
-fprintf('Final max(c) = %.6g | upper = %.6g | data = %.6g\n', ...
-    max(c_up), max(c_up(1:nC)), max(c_up(nC+1:end)));
+fprintf_c_blocks(c_up, nC, true, false);
 
 %% Function VOs + upper bound + data fidelity
 fprintf('\n=== Pensoneault GP (VO + upper bound + data fidelity) ===\n');
-hyp_tpl_vo = hyp_vo;
-objfun_vo_ub = @(theta) gp_seiso_hetero_noise('nlml', theta_to_hyp(theta, hyp_tpl_vo), ...
-    x_aug, y_aug, noise_var_aug);
-nonlcon_vo_ub = @(theta) pens_constraints_upper_hetero(theta, hyp_tpl_vo, ...
-    x_aug, y_aug, noise_var_aug, X_c, k, y_max, epsilon, x_obs, y_obs);
+nonlcon_vo_ub = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_vo, ...
+    x_aug, y_aug, noise_var_aug, X_c, k, y_max, epsilon, x_obs, y_obs, true, false);
 [hyp_vo_ub, nlml_vo_ub, exitflag_vo_ub, c_vo_ub] = fit_pens_constrained( ...
-    objfun_vo_ub, nonlcon_vo_ub, hyp_tpl_vo, hyp_lb, hyp_ub, theta_vo_box, ...
+    objfun_vo, nonlcon_vo_ub, hyp_tpl_vo, hyp_lb, hyp_ub, theta_vo_box, ...
     opts_pens, nTry, nMultistart, 43);
-fprintf('Final max(c) = %.6g | upper = %.6g | data = %.6g\n', ...
-    max(c_vo_ub), max(c_vo_ub(1:nC)), max(c_vo_ub(nC+1:end)));
+fprintf_c_blocks(c_vo_ub, nC, true, false);
 
-%% Derivative VOs + upper bound + data fidelity
-fprintf('\n=== Pensoneault GP (deriv + upper bound + data fidelity) ===\n');
-hyp_tpl_d = hyp_deriv;
-objfun_d_ub = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_d), ...
-    x_col, y_col, x_deriv, y_deriv, [], sn_deriv, true, []);
-nonlcon_d_ub = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl_d, ...
-    x_col, y_col, x_deriv, y_deriv, sn_deriv, [], X_c, k, y_max, ...
-    epsilon, x_obs, y_obs);
+%% Solak deriv + upper bound + data fidelity
+fprintf('\n=== Pensoneault GP (Solak deriv + upper bound + data fidelity) ===\n');
+nonlcon_d_ub = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_d, x_col, y_col, [], ...
+    X_c, k, y_max, epsilon, x_obs, y_obs, true, use_mono, x_deriv, y_deriv, sn_deriv);
 [hyp_d_ub, nlml_d_ub, exitflag_d_ub, c_d_ub] = fit_pens_constrained( ...
-    objfun_d_ub, nonlcon_d_ub, hyp_tpl_d, hyp_lb, hyp_ub, theta_deriv_box, ...
+    objfun_d, nonlcon_d_ub, hyp_tpl_d, hyp_lb, hyp_ub, theta_d_box, ...
     opts_pens, nTry, nMultistart, 44);
-fprintf('Final max(c) = %.6g | upper = %.6g | data = %.6g\n', ...
-    max(c_d_ub), max(c_d_ub(1:nC)), max(c_d_ub(nC+1:end)));
+fprintf_c_blocks(c_d_ub, nC, true, use_mono);
 
-%% Deriv + S=0 VO + upper bound + data fidelity
-fprintf('\nOptimizing deriv + v(0)=0 VO (ell, sf; hetero VO + sn_deriv=%.4g)...\n', sn_deriv);
-obj_d0 = @(hyp_cov) gp_seiso_deriv_obs_nlml_cov_only(hyp_cov, sn_fixed, ...
-    x_aug0, y_aug0, x_deriv, y_deriv, sn_deriv, noise_var_aug0);
-hyp_cov_d0 = minimize(hyp.cov, obj_d0, -100);
-hyp_d0 = struct('mean', [], 'cov', hyp_cov_d0(:), 'lik', sn_fixed);
-theta_d0_box = min(max(hyp_cov_d0(:), hyp_lb), hyp_ub);
-
-fprintf('\n=== Pensoneault GP (deriv + v(0)=0 VO + upper bound + data fidelity) ===\n');
-hyp_tpl_d0 = hyp_d0;
-objfun_d0_ub = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_d0), ...
+%% v(0)=0 VO + Solak deriv + upper bound + data fidelity
+fprintf('\n=== Pensoneault GP (v(0)=0 VO + Solak deriv + upper bound + data fidelity) ===\n');
+objfun_d0 = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_vo0), ...
     x_aug0, y_aug0, x_deriv, y_deriv, [], sn_deriv, true, noise_var_aug0);
-nonlcon_d0_ub = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl_d0, ...
-    x_aug0, y_aug0, x_deriv, y_deriv, sn_deriv, noise_var_aug0, X_c, k, y_max, ...
-    epsilon, x_obs, y_obs);
+nonlcon_d0_ub = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_vo0, ...
+    x_aug0, y_aug0, noise_var_aug0, X_c, k, y_max, epsilon, x_obs, y_obs, true, use_mono, ...
+    x_deriv, y_deriv, sn_deriv);
 [hyp_d0_ub, nlml_d0_ub, exitflag_d0_ub, c_d0_ub] = fit_pens_constrained( ...
-    objfun_d0_ub, nonlcon_d0_ub, hyp_tpl_d0, hyp_lb, hyp_ub, theta_d0_box, ...
+    objfun_d0, nonlcon_d0_ub, hyp_tpl_vo0, hyp_lb, hyp_ub, theta_d0_box, ...
     opts_pens, nTry, nMultistart, 46);
-fprintf('Final max(c) = %.6g | upper = %.6g | data = %.6g\n', ...
-    max(c_d0_ub), max(c_d0_ub(1:nC)), max(c_d0_ub(nC+1:end)));
+fprintf_c_blocks(c_d0_ub, nC, true, use_mono);
 
-%% Function VOs + deriv VOs + upper bound + data fidelity
-fprintf('\n=== Pensoneault GP (VO + deriv + upper bound + data fidelity) ===\n');
-hyp_tpl_both = hyp_voderiv;
-objfun_both_ub = @(theta) gp_seiso_deriv_obs('nlml', theta_to_hyp(theta, hyp_tpl_both), ...
-    x_aug, y_aug, x_deriv, y_deriv, [], sn_deriv, true, noise_var_aug);
-nonlcon_both_ub = @(theta) pens_constraints_upper_deriv(theta, hyp_tpl_both, ...
-    x_aug, y_aug, x_deriv, y_deriv, sn_deriv, noise_var_aug, X_c, k, y_max, ...
-    epsilon, x_obs, y_obs);
+%% Function VOs + Solak deriv + upper bound + data fidelity
+fprintf('\n=== Pensoneault GP (VO + Solak deriv + upper bound + data fidelity) ===\n');
+nonlcon_both_ub = @(theta) pens_constraints_upper_mono(theta, hyp_tpl_vo, ...
+    x_aug, y_aug, noise_var_aug, X_c, k, y_max, epsilon, x_obs, y_obs, true, use_mono, ...
+    x_deriv, y_deriv, sn_deriv);
 [hyp_both_ub, nlml_both_ub, exitflag_both_ub, c_both_ub] = fit_pens_constrained( ...
-    objfun_both_ub, nonlcon_both_ub, hyp_tpl_both, hyp_lb, hyp_ub, theta_voderiv_box, ...
+    objfun_vd, nonlcon_both_ub, hyp_tpl_vo, hyp_lb, hyp_ub, theta_vd_box, ...
     opts_pens, nTry, nMultistart, 45);
-fprintf('Final max(c) = %.6g | upper = %.6g | data = %.6g\n', ...
-    max(c_both_ub), max(c_both_ub(1:nC)), max(c_both_ub(nC+1:end)));
+fprintf_c_blocks(c_both_ub, nC, true, use_mono);
 
-%% Predictions
+%% Predictions (latent f)
 k_plot = 2;
 [~, ~, fmu_unc, fs2_unc] = gp(hyp_unc, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_unc = fmu_unc(:);
@@ -244,15 +257,15 @@ sf_unc = sqrt(max(fs2_unc(:), 0));
 m_vo = fmu_vo(:);
 sf_vo = sqrt(max(fs2_vo(:), 0));
 
-[~, ~, fmu_d, fs2_d] = gp_seiso_deriv_obs('pred', hyp_deriv, ...
-    x_col, y_col, x_deriv, y_deriv, x_grid(:), sn_deriv);
-m_deriv = fmu_d(:);
-sf_deriv = sqrt(max(fs2_d(:), 0));
+[~, ~, fmu_d, fs2_d] = gp_seiso_deriv_obs('pred', hyp_d, ...
+    x_col, y_col, x_deriv, y_deriv, x_grid(:), sn_deriv, true, []);
+m_d = fmu_d(:);
+sf_d = sqrt(max(fs2_d(:), 0));
 
-[~, ~, fmu_voderiv, fs2_voderiv] = gp_seiso_deriv_obs('pred', hyp_voderiv, ...
+[~, ~, fmu_vo_d, fs2_vo_d] = gp_seiso_deriv_obs('pred', hyp_vo_d, ...
     x_aug, y_aug, x_deriv, y_deriv, x_grid(:), sn_deriv, true, noise_var_aug);
-m_voderiv = fmu_voderiv(:);
-sf_voderiv = sqrt(max(fs2_voderiv(:), 0));
+m_vo_d = fmu_vo_d(:);
+sf_vo_d = sqrt(max(fs2_vo_d(:), 0));
 
 [~, ~, fmu_up, fs2_up] = gp(hyp_up, inffunc, meanfunc, covfunc, likfunc, x_col, y_col, x_grid(:));
 m_up = fmu_up(:);
@@ -264,7 +277,7 @@ m_vo_ub = fmu_vo_ub(:);
 sf_vo_ub = sqrt(max(fs2_vo_ub(:), 0));
 
 [~, ~, fmu_d_ub, fs2_d_ub] = gp_seiso_deriv_obs('pred', hyp_d_ub, ...
-    x_col, y_col, x_deriv, y_deriv, x_grid(:), sn_deriv);
+    x_col, y_col, x_deriv, y_deriv, x_grid(:), sn_deriv, true, []);
 m_d_ub = fmu_d_ub(:);
 sf_d_ub = sqrt(max(fs2_d_ub(:), 0));
 
@@ -281,22 +294,22 @@ sf_both_ub = sqrt(max(fs2_both_ub(:), 0));
 band_label = sprintf('\\mu_f \\pm %g\\sigma_f (latent)', k_plot);
 ylim_shared = [0, max([y_train(:); Vmax; ...
     m_unc + k_plot * sf_unc; m_vo + k_plot * sf_vo; ...
-    m_deriv + k_plot * sf_deriv; m_voderiv + k_plot * sf_voderiv; ...
+    m_d + k_plot * sf_d; m_vo_d + k_plot * sf_vo_d; ...
     m_up + k_plot * sf_up; m_vo_ub + k_plot * sf_vo_ub; ...
     m_d_ub + k_plot * sf_d_ub; m_d0_ub + k_plot * sf_d0_ub; ...
     m_both_ub + k_plot * sf_both_ub]) * 1.02];
 
 %% Tabbed figure
 fig = figure('Color', 'w', 'Position', [80, 80, 900, 560], ...
-    'Name', 'Michaelis-Menten GP: VO, deriv, and upper bound');
+    'Name', 'Michaelis-Menten GP: VO, Solak deriv, and upper bound');
 tg = uitabgroup(fig);
 
 panels = struct( ...
-    'm', {m_unc, m_vo, m_deriv, m_voderiv, m_up, m_vo_ub, m_d_ub, m_d0_ub, m_both_ub}, ...
-    'sf', {sf_unc, sf_vo, sf_deriv, sf_voderiv, sf_up, sf_vo_ub, sf_d_ub, sf_d0_ub, sf_both_ub}, ...
-    'title', {'Baseline GP', 'Virtual Obs GP', 'Virtual Deriv GP', ...
-              'VO + Deriv GP', 'Upper-bound GP', 'VO + Upper-bound', ...
-              'Deriv + Upper-bound', 'Deriv + v(0) + Upper-bound', ...
+    'm', {m_unc, m_vo, m_d, m_vo_d, m_up, m_vo_ub, m_d_ub, m_d0_ub, m_both_ub}, ...
+    'sf', {sf_unc, sf_vo, sf_d, sf_vo_d, sf_up, sf_vo_ub, sf_d_ub, sf_d0_ub, sf_both_ub}, ...
+    'title', {'Baseline GP', 'Virtual Obs GP', 'Solak Deriv GP', ...
+              'VO + Deriv', 'Upper-bound GP', 'VO + Upper-bound', ...
+              'Deriv + Upper-bound', 'v(0) + Deriv + Upper-bound', ...
               'VO + Deriv + Upper-bound'}, ...
     'x_v', {[], x_virt, [], x_virt, [], x_virt, [], x_virt_zero, x_virt}, ...
     'y_v', {[], y_virt, [], y_virt, [], y_virt, [], y_virt_zero, y_virt}, ...
@@ -307,13 +320,13 @@ tab_list = gobjects(numel(panels), 1);
 for p = 1:numel(panels)
     tab_list(p) = uitab(tg, 'Title', panels(p).title);
     ax_list(p) = axes('Parent', tab_list(p));
-    x_d = [];
+    x_d_plot = [];
     if panels(p).show_deriv
-        x_d = x_deriv;
+        x_d_plot = x_deriv;
     end
     plot_mm_bounds_panel(ax_list(p), panels(p).m, panels(p).sf, ...
         x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-        panels(p).x_v, panels(p).y_v, x_d);
+        panels(p).x_v, panels(p).y_v, x_d_plot);
     title(ax_list(p), panels(p).title, 'Interpreter', 'none', 'FontSize', 18);
 end
 
@@ -376,31 +389,59 @@ drawnow;
 %% Console report
 fprintf('\nFixed noises: sigma_data=%.4f | sigma_VO_zero=%.4g | sn_deriv=%.4g | epsilon=%.4g\n', ...
     sigma_data, sigma_VO_zero, sn_deriv, epsilon);
-fprintf('Baseline:         ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
+% fprintf('Interior VO at S=%.0f from noisy interp: y=%.4f\n', x_virt_mid, y_virt_mid);
+fprintf('Solak deriv:        v''=0 at S=[%s]\n', strjoin(compose('%.0f', x_deriv), ', '));
+fprintf('Baseline:           ell=%.4f, sf=%.4f, sn=%.4f | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), exp(hyp_unc.lik), nlml_unc);
-fprintf('Virtual Obs:      ell=%.4f, sf=%.4f | NLML=%.4f (n_aug=%d)\n', ...
+fprintf('Virtual Obs:        ell=%.4f, sf=%.4f | NLML=%.4f (n_aug=%d)\n', ...
     exp(hyp_vo.cov(1)), exp(hyp_vo.cov(2)), nlml_vo, numel(y_aug));
-fprintf('Virtual Deriv:    ell=%.4f, sf=%.4f | NLML=%.4f\n', ...
-    exp(hyp_deriv.cov(1)), exp(hyp_deriv.cov(2)), nlml_deriv);
-fprintf('VO+deriv:         ell=%.4f, sf=%.4f | NLML=%.4f (n_aug=%d)\n', ...
-    exp(hyp_voderiv.cov(1)), exp(hyp_voderiv.cov(2)), nlml_voderiv, numel(y_aug));
-fprintf('Upper+tube:       ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g (upper=%.4g, data=%.4g)\n', ...
-    exp(hyp_up.cov(1)), exp(hyp_up.cov(2)), nlml_up, exitflag_up, ...
-    max(c_up), max(c_up(1:nC)), max(c_up(nC+1:end)));
-fprintf('VO+upper:         ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g (upper=%.4g, data=%.4g)\n', ...
-    exp(hyp_vo_ub.cov(1)), exp(hyp_vo_ub.cov(2)), nlml_vo_ub, exitflag_vo_ub, ...
-    max(c_vo_ub), max(c_vo_ub(1:nC)), max(c_vo_ub(nC+1:end)));
-fprintf('Deriv+upper:      ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g (upper=%.4g, data=%.4g)\n', ...
-    exp(hyp_d_ub.cov(1)), exp(hyp_d_ub.cov(2)), nlml_d_ub, exitflag_d_ub, ...
-    max(c_d_ub), max(c_d_ub(1:nC)), max(c_d_ub(nC+1:end)));
-fprintf('Deriv+v(0)+upper: ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g (upper=%.4g, data=%.4g)\n', ...
-    exp(hyp_d0_ub.cov(1)), exp(hyp_d0_ub.cov(2)), nlml_d0_ub, exitflag_d0_ub, ...
-    max(c_d0_ub), max(c_d0_ub(1:nC)), max(c_d0_ub(nC+1:end)));
-fprintf('VO+deriv+upper:   ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g (upper=%.4g, data=%.4g)\n', ...
-    exp(hyp_both_ub.cov(1)), exp(hyp_both_ub.cov(2)), nlml_both_ub, exitflag_both_ub, ...
-    max(c_both_ub), max(c_both_ub(1:nC)), max(c_both_ub(nC+1:end)));
+fprintf('Solak deriv unc:    ell=%.4f, sf=%.4f | NLML=%.4f\n', ...
+    exp(hyp_d_unc.cov(1)), exp(hyp_d_unc.cov(2)), nlml_d_unc);
+fprintf('Deriv+tube:         ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_d.cov(1)), exp(hyp_d.cov(2)), nlml_d, exitflag_d, max(c_d));
+fprintf('VO+deriv:           ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_vo_d.cov(1)), exp(hyp_vo_d.cov(2)), nlml_vo_d, exitflag_vo_d, max(c_vo_d));
+fprintf('Upper+tube:         ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_up.cov(1)), exp(hyp_up.cov(2)), nlml_up, exitflag_up, max(c_up));
+fprintf('VO+upper:           ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_vo_ub.cov(1)), exp(hyp_vo_ub.cov(2)), nlml_vo_ub, exitflag_vo_ub, max(c_vo_ub));
+fprintf('Deriv+upper:        ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_d_ub.cov(1)), exp(hyp_d_ub.cov(2)), nlml_d_ub, exitflag_d_ub, max(c_d_ub));
+fprintf('v(0)+deriv+upper:   ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_d0_ub.cov(1)), exp(hyp_d0_ub.cov(2)), nlml_d0_ub, exitflag_d0_ub, max(c_d0_ub));
+fprintf('VO+deriv+upper:     ell=%.4f, sf=%.4f | NLML=%.4f | exitflag=%d | max(c)=%.4g\n', ...
+    exp(hyp_both_ub.cov(1)), exp(hyp_both_ub.cov(2)), nlml_both_ub, exitflag_both_ub, max(c_both_ub));
 
 %% ----- local functions -----
+function [hyp_opt, nlml_opt] = fit_nlml_multistart(objfun, hyp_tpl, theta0, ...
+    hyp_lb, hyp_ub, nMultistart, opts, rng_seed)
+% Box-constrained NLML: heuristic start plus random starts in [hyp_lb, hyp_ub].
+theta0 = min(max(theta0(:), hyp_lb), hyp_ub);
+rng(rng_seed);
+starts = theta0;
+for i = 2:nMultistart
+    starts = [starts, hyp_lb + rand(2, 1) .* (hyp_ub - hyp_lb)]; %#ok<AGROW>
+end
+
+best_nlml = inf;
+theta_opt = theta0;
+for j = 1:size(starts, 2)
+    [theta_j, nlml_j] = fmincon(objfun, starts(:, j), [], [], [], [], ...
+        hyp_lb, hyp_ub, [], opts);
+    if isfinite(nlml_j) && nlml_j < best_nlml
+        best_nlml = nlml_j;
+        theta_opt = theta_j;
+    end
+end
+if ~isfinite(best_nlml)
+    theta_opt = theta0;
+    best_nlml = objfun(theta_opt);
+    fprintf('Warning: no successful unconstrained fmincon run; using heuristic theta.\n');
+end
+hyp_opt = theta_to_hyp(theta_opt, hyp_tpl);
+nlml_opt = best_nlml;
+end
+
 function [hyp_con, nlml_con, exitflag_con, c_final] = fit_pens_constrained( ...
     objfun, nonlcon, hyp_tpl, hyp_lb, hyp_ub, theta_unc_box, opts_pens, nTry, nMultistart, rng_seed)
 
@@ -412,7 +453,7 @@ for t = 1:nTry
     theta_try = hyp_lb + rand(2, 1) .* (hyp_ub - hyp_lb);
     [c_try, ~] = nonlcon(theta_try);
     if max(c_try) <= 0
-        feasible_starts = [feasible_starts, theta_try];
+        feasible_starts = [feasible_starts, theta_try]; %#ok<AGROW>
         nlml_try = objfun(theta_try);
         if nlml_try < best_feas_nlml
             best_feas_nlml = nlml_try;
@@ -471,98 +512,68 @@ hyp.cov = theta(1:2);
 hyp.mean = [];
 end
 
-function [c, ceq] = pens_constraints_lower(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k)
-% mu_f - k*sigma_f >= 0  <=>  c <= 0
-hyp = theta_to_hyp(theta, hyp_tpl);
-[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
-m_xc = fmu(:);
-s_xc = sqrt(max(fs2(:), 0));
-c = k .* s_xc - m_xc;
-ceq = [];
+function [c, ceq] = pens_constraints_upper_mono(theta, hyp_tpl, x, y, noise_var, ...
+    X_c, k, y_max, epsilon, x_data, y_data, do_upper, do_mono, x_d, y_d, sn_d)
+% Pensoneault blocks on the function-value GP, optionally with Solak deriv obs.
+%   c_upper:  mu_f + k*sigma_f <= y_max at X_c
+%   c_mono:   mu_f' - k*sigma_f' >= 0  <=>  k*sigma_f' - mu_f' <= 0 at X_c
+%             (currently disabled: callers pass use_mono=false)
+%   c_data:   |y - mu_y(x)| <= epsilon at real assay points
+if nargin < 15
+    x_d = [];
+    y_d = [];
+    sn_d = 0;
 end
-
-function [c, ceq] = pens_constraints_upper(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k, y_max)
-% mu_f + k*sigma_f <= y_max  <=>  c <= 0
-hyp = theta_to_hyp(theta, hyp_tpl);
-[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
-m_xc = fmu(:);
-s_xc = sqrt(max(fs2(:), 0));
-c = m_xc + k .* s_xc - y_max;
-ceq = [];
-end
-
-function [c, ceq] = pens_constraints_upper_fid(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k, y_max, epsilon)
-% Upper bound on latent f at X_c; data-fidelity tube at training points.
 hyp = theta_to_hyp(theta, hyp_tpl);
 nC = numel(X_c);
-xstar = [X_c(:); x(:)];
-[ymu, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, xstar);
-m_xc = fmu(1:nC);
-s_xc = sqrt(max(fs2(1:nC), 0));
-c_upper = m_xc + k .* s_xc - y_max;
-y_star = ymu(nC+1:end);
-c_data = abs(y(:) - y_star) - epsilon;
-c = [c_upper(:); c_data(:)];
+c = zeros(0, 1);
+
+need_f = do_upper || ~isempty(x_data);
+if need_f
+    xstar = [X_c(:); x_data(:)];
+    [ymu, ~, fmu, fs2] = gp_seiso_deriv_obs('pred', hyp, x, y, x_d, y_d, xstar, ...
+        sn_d, true, noise_var);
+    if do_upper
+        m_xc = fmu(1:nC);
+        s_xc = sqrt(max(fs2(1:nC), 0));
+        c = [c; m_xc + k .* s_xc - y_max];
+    end
+end
+% Pensoneault monotonicity f'(S) >= 0 (commented out):
+% if do_mono
+%     [m_d, s2_d] = gp_seiso_deriv_obs('deriv', hyp, x, y, x_d, y_d, X_c(:), ...
+%         sn_d, true, noise_var);
+%     s_d = sqrt(max(s2_d(:), 0));
+%     c = [c; k .* s_d - m_d(:)];
+% end
+if ~isempty(x_data)
+    y_star = ymu(nC+1:end);
+    c = [c; abs(y_data(:) - y_star) - epsilon];
+end
 ceq = [];
 end
 
-function [c, ceq] = pens_constraints_upper_hetero(theta, hyp_tpl, x, y, noise_var, ...
-    X_c, k, y_max, epsilon, x_data, y_data)
-% Upper bound + data-fidelity on heteroscedastic VO posterior.
-hyp = theta_to_hyp(theta, hyp_tpl);
-nC = numel(X_c);
-xstar = [X_c(:); x_data(:)];
-[ymu, ~, fmu, fs2] = gp_seiso_hetero_noise('pred', hyp, x, y, noise_var, xstar);
-m_xc = fmu(1:nC);
-s_xc = sqrt(max(fs2(1:nC), 0));
-c_upper = m_xc + k .* s_xc - y_max;
-y_star = ymu(nC+1:end);
-c_data = abs(y_data(:) - y_star) - epsilon;
-c = [c_upper(:); c_data(:)];
-ceq = [];
+function fprintf_c_blocks(c, nC, do_upper, do_mono)
+i = 0;
+parts = {sprintf('max(c)=%.6g', max(c))};
+if do_upper
+    parts{end+1} = sprintf('upper=%.6g', max(c(i+1:i+nC))); %#ok<AGROW>
+    i = i + nC;
 end
-
-function [c, ceq] = pens_constraints_both(theta, hyp_tpl, inffunc, meanfunc, covfunc, likfunc, ...
-    x, y, X_c, k, y_max)
-% lower: mu - k*sigma >= 0; upper: mu + k*sigma <= y_max
-hyp = theta_to_hyp(theta, hyp_tpl);
-[~, ~, fmu, fs2] = gp(hyp, inffunc, meanfunc, covfunc, likfunc, x, y, X_c(:));
-m_xc = fmu(:);
-s_xc = sqrt(max(fs2(:), 0));
-c_lower = k .* s_xc - m_xc;
-c_upper = m_xc + k .* s_xc - y_max;
-c = [c_lower; c_upper];
-ceq = [];
+if do_mono
+    parts{end+1} = sprintf('mono=%.6g', max(c(i+1:i+nC))); %#ok<AGROW>
+    i = i + nC;
 end
-
-function [c, ceq] = pens_constraints_upper_deriv(theta, hyp_tpl, x, y, x_d, y_d, sn_deriv, ...
-    noise_var, X_c, k, y_max, epsilon, x_data, y_data)
-% Upper bound on latent f at X_c; data-fidelity tube at real training points.
-%   mu_f + k*sigma_f <= y_max
-%   |y - y*(x)| <= epsilon
-hyp = theta_to_hyp(theta, hyp_tpl);
-nC = numel(X_c);
-xstar = [X_c(:); x_data(:)];
-[ymu, ~, fmu, fs2] = gp_seiso_deriv_obs('pred', hyp, x, y, x_d, y_d, xstar, ...
-    sn_deriv, true, noise_var);
-m_xc = fmu(1:nC);
-s_xc = sqrt(max(fs2(1:nC), 0));
-c_upper = m_xc + k .* s_xc - y_max;
-y_star = ymu(nC+1:end);
-c_data = abs(y_data(:) - y_star) - epsilon;
-c = [c_upper(:); c_data(:)];
-ceq = [];
+parts{end+1} = sprintf('data=%.6g', max(c(i+1:end)));
+fprintf('Final %s\n', strjoin(parts, ' | '));
 end
 
 function plot_mm_bounds_panel(ax, m, sf, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_deriv)
+    x_virt, y_virt, x_deriv)
 if nargin < 13
-    x_virt_zero = [];
-    y_virt_zero = [];
+    x_virt = [];
+    y_virt = [];
 end
 if nargin < 15
     x_deriv = [];
@@ -576,8 +587,8 @@ plot(ax, x_grid, m, 'k--', 'LineWidth', 2, 'DisplayName', 'Posterior mean \mu_f'
 plot(ax, x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (MM)');
 plot(ax, x_obs, y_obs, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', 'Observed data');
-if ~isempty(x_virt_zero)
-    scatter(ax, x_virt_zero(:), y_virt_zero(:), 90, 'd', ...
+if ~isempty(x_virt)
+    scatter(ax, x_virt(:), y_virt(:), 90, 'd', ...
         'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
         'LineWidth', 1.5, 'DisplayName', 'Virtual observations');
 end

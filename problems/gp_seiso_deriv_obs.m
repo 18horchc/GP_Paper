@@ -83,7 +83,12 @@ end
 
 function [ymu, ys2, fmu, fs2] = pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
 [L, ~, z, ~, ell, sf2, sn2] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
-x = x(:); x_d = x_d(:); xs = xs(:);
+x = x(:); xs = xs(:);
+if isempty(x_d)
+    x_d = zeros(0, 1);
+else
+    x_d = x_d(:);
+end
 nS = numel(xs);
 
 alpha = L' \ (L \ z);
@@ -104,7 +109,12 @@ end
 
 function [m_deriv, s2_deriv] = deriv_pred_core(hyp, x, y, x_d, y_d, xs, sn_deriv, noise_var)
 [L, ~, z, ~, ell, sf2] = factor_Ky(hyp, x, y, x_d, y_d, sn_deriv, noise_var);
-x = x(:); x_d = x_d(:); xs = xs(:);
+x = x(:); xs = xs(:);
+if isempty(x_d)
+    x_d = zeros(0, 1);
+else
+    x_d = x_d(:);
+end
 nS = numel(xs);
 
 alpha = L' \ (L \ z);
@@ -143,22 +153,35 @@ end
 if nargin < 8
     jitter_scale = 1;
 end
-x = x(:); y = y(:); x_d = x_d(:); y_d = y_d(:);
+x = x(:); y = y(:);
+if isempty(x_d)
+    x_d = zeros(0, 1);
+    y_d = zeros(0, 1);
+else
+    x_d = x_d(:); y_d = y_d(:);
+end
 n = numel(x); m = numel(x_d);
 nTot = n + m;
 
 ell = exp(hyp.cov(1));
 sf2 = exp(2 * hyp.cov(2));
-sn2 = exp(2 * hyp.lik(1));
+if isempty(hyp.lik)
+    sn2 = 0;
+else
+    sn2 = exp(2 * hyp.lik(1));
+end
 sn_deriv2 = sn_deriv^2;
 
 %building cov blocks
 K_ff = seiso_Kff(x, x, ell, sf2);
-K_fd = seiso_Kfd(x, x_d, ell, sf2);
-K_df = seiso_Kdf(x_d, x, ell, sf2);
-K_dd = seiso_Kdd(x_d, x_d, ell, sf2);
-
-K_aug = [K_ff, K_fd; K_df, K_dd];
+if m == 0
+    K_aug = K_ff;
+else
+    K_fd = seiso_Kfd(x, x_d, ell, sf2);
+    K_df = seiso_Kdf(x_d, x, ell, sf2);
+    K_dd = seiso_Kdd(x_d, x_d, ell, sf2);
+    K_aug = [K_ff, K_fd; K_df, K_dd];
+end
 diag_mean = mean(diag(K_aug));
 if ~isfinite(diag_mean) || diag_mean <= 0
     diag_mean = 1;
