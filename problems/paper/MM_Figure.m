@@ -22,16 +22,30 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 %% Training data ([S] in mM, v_0 in μM/s)
 x_max = 200;
 noise_frac = 0.05;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
-x_train = [10; 30; 60; 90; 200];
+x_sites = [10; 30; 60; 90; 200];
+n_rep = 3;   % independent assays at each S, same N(0, sigma_n^2)
+x_train = repelem(x_sites, n_rep);
 n_train = numel(x_train);
 
 rng(100);
 v_true_at_train = mm_static(x_train);
 y_domain_max = mm_static(x_max);
 noise_sd_true = noise_frac * y_domain_max;
+% Truncated-normal assays: redraw if y > Vmax. GP likelihood is unchanged.
 y_train = v_true_at_train + noise_sd_true * randn(size(v_true_at_train));
-fprintf('Synthetic data: n=%d on [0, %.1f], homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n', ...
-    n_train, x_max, noise_sd_true, 100 * noise_frac);
+n_reject = 0;
+bad = y_train > Vmax;
+while any(bad)
+    n_reject = n_reject + sum(bad);
+    y_train(bad) = v_true_at_train(bad) + noise_sd_true * randn(sum(bad), 1);
+    bad = y_train > Vmax;
+end
+fprintf(['Synthetic data: %d sites x %d replicates (n=%d) on [0, %.1f], ', ...
+    'homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n'], ...
+    numel(x_sites), n_rep, n_train, x_max, noise_sd_true, 100 * noise_frac);
+if n_reject > 0
+    fprintf('Redrawn %d Gaussian draw(s) with y > Vmax (truncated at Vmax).\n', n_reject);
+end
 
 x_obs = x_train(:);
 y_obs = y_train(:);
@@ -45,7 +59,7 @@ x_virt_zero = 0;
 y_virt_zero = 0;
 % Saturation VO (noisy linear interpolant at midpoint of S=90 and S=200):
 % x_virt_mid = 0.5 * (90 + 200);
-% y_virt_mid = interp1([90; 200], [y_train(x_train == 90); y_train(x_train == 200)], ...
+% y_virt_mid = interp1([90; 200], [mean(y_train(x_train == 90)); mean(y_train(x_train == 200))], ...
 %     x_virt_mid, 'linear');
 
 x_virt = x_virt_zero;              % [x_virt_zero; x_virt_mid]
@@ -98,7 +112,7 @@ catch
 end
 addpath(fileparts(fileparts(mfilename('fullpath'))));  % problems/
 
-ell0 = std(x_train);
+ell0 = std(x_sites);
 sf0  = std(y_train);
 sn0  = max(1e-3, noise_sd_true);
 hyp = struct('mean', [], 'cov', log([ell0; sf0]), 'lik', log(sn0));
@@ -307,10 +321,10 @@ tg = uitabgroup(fig);
 panels = struct( ...
     'm', {m_unc, m_vo, m_d, m_vo_d, m_up, m_vo_ub, m_d_ub, m_d0_ub, m_both_ub}, ...
     'sf', {sf_unc, sf_vo, sf_d, sf_vo_d, sf_up, sf_vo_ub, sf_d_ub, sf_d0_ub, sf_both_ub}, ...
-    'title', {'Baseline GP', 'Virtual Obs GP', 'Solak Deriv GP', ...
-              'VO + Deriv', 'Upper-bound GP', 'VO + Upper-bound', ...
-              'Deriv + Upper-bound', 'v(0) + Deriv + Upper-bound', ...
-              'VO + Deriv + Upper-bound'}, ...
+    'title', {'Baseline', 'Boundary VO', 'Deriv VO', ...
+              'Boundary VO + Deriv VO', 'Upper-bound', 'Boundary VO + Upper-bound', ...
+              'Deriv VO + Upper-bound', 'Boundary VO + Deriv VO + Upper-bound', ...
+              'Boundary VO + Deriv VO + Upper-bound'}, ...
     'x_v', {[], x_virt, [], x_virt, [], x_virt, [], x_virt_zero, x_virt}, ...
     'y_v', {[], y_virt, [], y_virt, [], y_virt, [], y_virt_zero, y_virt}, ...
     'show_deriv', {false, false, true, true, false, false, true, true, true});
@@ -592,9 +606,9 @@ if ~isempty(x_virt)
         'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
         'LineWidth', 1.5, 'DisplayName', 'Virtual observations');
 end
-yh0 = yline(ax, 0, 'k:', 'v_0 = 0', 'Alpha', 0.5);
+yh0 = yline(ax, 0, 'k:', 'Alpha', 0.5);
 yh0.Annotation.LegendInformation.IconDisplayStyle = 'off';
-yhV = yline(ax, Vmax, 'k:', 'V_{max}', 'Alpha', 0.5);
+yhV = yline(ax, Vmax, 'k:', 'V_{max}', 'Alpha', 0.5, 'FontSize', 18);
 yhV.Annotation.LegendInformation.IconDisplayStyle = 'off';
 xlim(ax, [0, x_max]);
 ylim(ax, ylim_shared);
@@ -610,6 +624,7 @@ if ~isempty(x_deriv)
     end
 end
 ax.FontSize = 18;
+yhV.FontSize = 18;
 xlabel(ax, '[S] (mM)', 'FontSize', 18);
 ylabel(ax, 'v_0 (\muM/s)', 'FontSize', 18);
 end
