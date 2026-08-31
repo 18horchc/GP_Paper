@@ -10,14 +10,14 @@
 clear; clc; close all;
 
 %% MM parameters
-Vmax = 6;
-Km   = .15;
+Vmax = 100;
+Km   = 18;
 mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 %% Training data ([S] in mM, v_0 in μM/s)
-x_max = 2;
+x_max = 200;
 noise_frac = 0.05;   % data-generating only: sigma = noise_frac * max v on [0, x_max]
-x_train = [0.1; 0.3; 0.6; 0.9; 2];
+x_train = [10; 30; 60; 90; 200];
 n_train = numel(x_train);
 
 rng(100);
@@ -30,9 +30,8 @@ fprintf('Synthetic data: n=%d, data-generating sigma_n = %.4f (%.0f%% of v(x_max
 
 %% Fixed observation noises (editable; not optimized)
 sigma_data = noise_sd_true;                 % known assay noise
-sigma_VO_zero = 0.05; %0.2 * noise_sd_true;       % tight soft-hard anchor at v(0)=0
-sigma_VO_sat = 0.4; %0.20 * Vmax;                 % soft saturation target (units of v)
-sn_deriv = 0.4; %0.2;                             % Solak soft Gaussian derivative noise
+sigma_VO_zero = 0.2 * noise_sd_true;       % tight soft-hard anchor at v(0)=0
+sn_deriv = 0.5 * noise_sd_true; %0.2;                             % Solak soft Gaussian derivative noise
 
 %% Virtual function-value observations (heteroscedastic VO)
 x_obs = x_train(:);
@@ -40,26 +39,19 @@ y_obs = y_train(:);
 
 x_virt_zero = 0;
 y_virt_zero = 0;
-x_virt_sat = 1.4;
-y_virt_sat = 5.3;
 
-x_aug = [x_obs; x_virt_zero; x_virt_sat];
-y_aug = [y_obs; y_virt_zero; y_virt_sat];
-noise_var_aug = [sigma_data^2 * ones(numel(y_obs), 1); ...
-    sigma_VO_zero^2; sigma_VO_sat^2];
+x_aug = [x_obs; x_virt_zero];
+y_aug = [y_obs; y_virt_zero];
+noise_var_aug = [sigma_data^2 * ones(numel(y_obs), 1); sigma_VO_zero^2];
 
-fprintf('Virtual obs: v(0)=0 (sigma=%.4g) | v(%.1f)=%.1f (sigma=%.4g)\n', ...
-    sigma_VO_zero, x_virt_sat, y_virt_sat, sigma_VO_sat);
+fprintf('Virtual obs: v(0)=0 (sigma=%.4g)\n', sigma_VO_zero);
 
 %% Virtual derivative observations (Solak; fixed separate sn_deriv)
-%x_deriv = linspace(0, 2, 10)';          % 0, 2/9, ..., 2
-%y_deriv = (27:-3:0)';                   % 27, ..., 0
+x_deriv = linspace(100, 200, 5)';
+y_deriv = 0.01 * ones(numel(x_deriv), 1);
 
-x_deriv = [1; 1.4; 1.8];
-y_deriv = 0.3 * ones(numel(x_deriv), 1);
-
-fprintf('Virtual deriv obs: %d sites | y_deriv=0.3 | sn_deriv=%.4g (fixed)\n', ...
-    numel(x_deriv), sn_deriv);
+fprintf('Virtual deriv obs: %d sites on [%.0f, %.0f] | y_deriv=%.2g | sn_deriv=%.4g (fixed)\n', ...
+    numel(x_deriv), x_deriv(1), x_deriv(end), y_deriv(1), sn_deriv);
 
 %% Ground truth curve
 x_grid = linspace(0, x_max, 500);
@@ -162,28 +154,28 @@ tab_unc = uitab(tg, 'Title', 'Baseline GP');
 ax1 = axes('Parent', tab_unc);
 plot_mm_gp_panel(ax1, m_unc, sf_unc, false, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
+    x_virt_zero, y_virt_zero);
 title(ax1, 'Baseline GP', 'Interpreter', 'none', 'FontSize', 18);
 
 tab_aug = uitab(tg, 'Title', 'Virtual Obs GP');
 ax2 = axes('Parent', tab_aug);
 plot_mm_gp_panel(ax2, m_aug, sf_aug, true, [], ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
+    x_virt_zero, y_virt_zero);
 title(ax2, 'Virtual Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
-tab_deriv = uitab(tg, 'Title', 'Virtual Deriv Obs GP');
-ax3 = axes('Parent', tab_deriv);
-plot_mm_gp_panel(ax3, m_deriv, sf_deriv, false, x_deriv, ...
-    x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
-title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 18);
+% tab_deriv = uitab(tg, 'Title', 'Virtual Deriv Obs GP');
+% ax3 = axes('Parent', tab_deriv);
+% plot_mm_gp_panel(ax3, m_deriv, sf_deriv, false, x_deriv, ...
+%     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
+%     x_virt_zero, y_virt_zero);
+% title(ax3, 'Virtual Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
 tab_both = uitab(tg, 'Title', 'Virtual + Deriv Obs GP');
 ax4 = axes('Parent', tab_both);
 plot_mm_gp_panel(ax4, m_both, sf_both, true, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat);
+    x_virt_zero, y_virt_zero);
 title(ax4, 'Virtual + Deriv Obs GP', 'Interpreter', 'none', 'FontSize', 18);
 
 %% Standalone legend (for LaTeX / Inkscape)
@@ -246,8 +238,8 @@ drawnow;
 % fprintf('Saved %s\n', legend_path);
 
 %% Console report
-fprintf('\nFixed noises: sigma_data=%.4f | sigma_VO_zero=%.4g | sigma_VO_sat=%.4g | sn_deriv=%.4g\n', ...
-    sigma_data, sigma_VO_zero, sigma_VO_sat, sn_deriv);
+fprintf('\nFixed noises: sigma_data=%.4f | sigma_VO_zero=%.4g | sn_deriv=%.4g\n', ...
+    sigma_data, sigma_VO_zero, sn_deriv);
 fprintf('Baseline:      ell=%.4f, sf=%.4f, sn=%.4f (fixed) | NLML=%.4f\n', ...
     exp(hyp_unc.cov(1)), exp(hyp_unc.cov(2)), sigma_data, nlml_unc);
 fprintf('Augmented:     ell=%.4f, sf=%.4f | NLML=%.4f (heteroscedastic VO, n_aug=%d)\n', ...
@@ -266,7 +258,7 @@ end
 %% ----- local functions -----
 function plot_mm_gp_panel(ax, m, sf, show_virt, x_deriv, ...
     x_grid, y_true, x_obs, y_obs, k_plot, band_label, ylim_shared, x_max, Vmax, ...
-    x_virt_zero, y_virt_zero, x_virt_sat, y_virt_sat)
+    x_virt_zero, y_virt_zero)
 ax.Layer = 'top';
 hold(ax, 'on');
 grid(ax, 'on');
@@ -277,7 +269,7 @@ plot(ax, x_grid, y_true, 'b-', 'LineWidth', 1.5, 'DisplayName', 'Ground truth (M
 plot(ax, x_obs, y_obs, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 6, ...
     'DisplayName', 'Observed data');
 if show_virt
-    scatter(ax, [x_virt_zero(:); x_virt_sat(:)], [y_virt_zero(:); y_virt_sat(:)], 90, 'd', ...
+    scatter(ax, x_virt_zero(:), y_virt_zero(:), 90, 'd', ...
         'MarkerFaceColor', [0.85, 0.85, 0.85], 'MarkerEdgeColor', 'k', ...
         'LineWidth', 1.5, 'DisplayName', 'Virtual observations');
 end
