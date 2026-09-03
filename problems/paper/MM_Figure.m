@@ -21,16 +21,20 @@ mm_static = @(S) (Vmax .* S) ./ (Km + S);
 
 %% Training data ([S] in mM, v_0 in μM/s)
 x_max = 200;
-noise_frac = 0.05;   % homoscedastic: sigma = noise_frac * max v on [0, x_max]
+noise_frac = 0.3;   % homoscedastic: sigma_n = noise_frac * SD of true MM curve
 x_sites = [10; 30; 60; 90; 200];
 n_rep = 3;   % independent assays at each S, same N(0, sigma_n^2)
 x_train = repelem(x_sites, n_rep);
 n_train = numel(x_train);
 
+%% Ground truth curve
+x_grid = linspace(0, x_max, 500);
+y_true = mm_static(x_grid);
+sd_true_curve = std(y_true(:));
+
 rng(100);
 v_true_at_train = mm_static(x_train);
-y_domain_max = mm_static(x_max);
-noise_sd_true = noise_frac * y_domain_max;
+noise_sd_true = noise_frac * sd_true_curve;   % y ~ N(v_true, sigma_n^2)
 % Truncated-normal assays: redraw if y > Vmax. GP likelihood is unchanged.
 y_train = v_true_at_train + noise_sd_true * randn(size(v_true_at_train));
 n_reject = 0;
@@ -41,8 +45,8 @@ while any(bad)
     bad = y_train > Vmax;
 end
 fprintf(['Synthetic data: %d sites x %d replicates (n=%d) on [0, %.1f], ', ...
-    'homoscedastic noise sigma_n = %.4f (%.0f%% of v(x_max))\n'], ...
-    numel(x_sites), n_rep, n_train, x_max, noise_sd_true, 100 * noise_frac);
+    'homoscedastic noise sigma_n = %.4f (%.0f%% of SD of true curve = %.4f)\n'], ...
+    numel(x_sites), n_rep, n_train, x_max, noise_sd_true, 100 * noise_frac, sd_true_curve);
 if n_reject > 0
     fprintf('Redrawn %d Gaussian draw(s) with y > Vmax (truncated at Vmax).\n', n_reject);
 end
@@ -52,7 +56,7 @@ y_obs = y_train(:);
 
 %% Fixed observation noises (not optimized)
 sigma_data = noise_sd_true;                 % known assay noise
-sigma_VO_zero = 0.8 * noise_sd_true;        % tight soft-hard anchor at v(0)=0
+sigma_VO_zero = 0.5 * noise_sd_true;        % tight soft-hard anchor at v(0)=0
 
 %% Virtual function-value observations (heteroscedastic VO)
 x_virt_zero = 0;
@@ -83,10 +87,6 @@ y_deriv = zeros(size(x_deriv));
 sn_deriv = 0.1; %0.2 * noise_sd_true;  
 fprintf('Solak deriv obs: %d sites at S=[%s], v''=0 | sn_deriv=%.4g\n', ...
     numel(x_deriv), strjoin(compose('%.0f', x_deriv), ', '), sn_deriv);
-
-%% Ground truth curve
-x_grid = linspace(0, x_max, 500);
-y_true = mm_static(x_grid);
 
 %% Pensoneault constraint grid at X_c
 eta = 0.022;   % 2.2% tail probability
@@ -134,8 +134,8 @@ sn_fixed = log(noise_sd_true);
 hyp_tpl = struct('mean', [], 'cov', hyp.cov(:), 'lik', sn_fixed);
 nC = numel(X_c);
 
-opts_pens = optimoptions('fmincon', 'Algorithm', 'interior-point', ...
-    'EnableFeasibilityMode', true, 'Display', 'off', ...
+opts_pens = optimoptions('fmincon', 'Algorithm', 'sqp', ...
+    'Display', 'off', ...
     'ConstraintTolerance', 1e-4, 'OptimalityTolerance', 1e-4, ...
     'MaxFunctionEvaluations', 10000, 'MaxIterations', 2000);
 nTry = 2000;
