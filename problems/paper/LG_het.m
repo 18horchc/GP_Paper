@@ -1,8 +1,9 @@
 % LG_het.m — Logistic growth heteroscedastic GP: Models A–E (single run).
 % Design: observation times with nRep=5 replicates.
 % Latent truth mu(t) = K / (1+exp(-r(t-t0))).
-% Observations: y_ij ~ N(mu_i, sigma_i^2) with NB-inspired Var = mu + alpha*mu^2
-% (Gaussian likelihood only; not sampled from a negative-binomial distribution).
+% Observations: y_ij ~ N(mu_i, sigma_i^2) with additive Gaussian noise:
+%   sigma = 10% of SD of true curve at all times except Day 7, which has
+%   sigma = 50% of SD of true curve.
 %   A: homoscedastic GP (learn one sn)
 %   B: oracle hetero diag(R) via gp_seiso_hetero_noise
 %   C: empirical replicate s_i^2 on diagonal
@@ -15,24 +16,31 @@ clear; clc; close all;
 
 %% Logistic growth parameters
 K  = 1000;
-r  = 0.6;
+r  = 1.0;
 t0 = 5;
 t_min = 0;
 t_max = 14;
 
 logistic = @(t) K ./ (1 + exp(-r .* (t - t0)));
 
-%% NB-inspired heteroscedastic Gaussian design
-t_unique = [0;2;4;6;8;10;12;14];
+%% Additive Gaussian heteroscedastic design (10% of SD of true curve; 50% at Day 7)
+t_unique = [0;2;5;7;14];
 t_obs = t_unique;
-alpha = 0.01;
+noise_frac_base = 0.1;
+noise_frac_day7 = 1.0;
+t_day7 = 7;
 nRep  = 5;
 R_rep = nRep;   % alias used by fprintf / models
 
 rng(42);
-mu_true        = logistic(t_obs);
-var_true       = mu_true + alpha .* mu_true.^2;
-sigma_true_obs = sqrt(var_true);
+mu_true = logistic(t_obs);
+sd_true_curve = std(logistic(linspace(t_min, t_max, 500)'));
+sigma_base = noise_frac_base * sd_true_curve;
+sigma_day7 = noise_frac_day7 * sd_true_curve;
+sigma_true_obs = sigma_base * ones(size(t_obs));
+idx_day7 = abs(t_obs - t_day7) < 1e-12;
+sigma_true_obs(idx_day7) = sigma_day7;
+var_true = sigma_true_obs.^2;
 
 Y = zeros(numel(t_obs), nRep);
 for i = 1:numel(t_obs)
@@ -43,7 +51,7 @@ n_neg = sum(Y(:) < 0);
 fprintf('Negative observations: %d / %d (no clipping applied)\n', n_neg, numel(Y));
 if n_neg > 0
     warning('LG_het:NegativeObs', ...
-        '%d negative y values; consider reducing alpha (currently %.4g).', n_neg, alpha);
+        '%d negative y values; consider reducing additive noise fractions.', n_neg);
 end
 
 mean_rep        = mean(Y, 2);
@@ -62,15 +70,21 @@ assert(size(Y, 2) == 5, 'Expected nRep=5 columns in Y.');
 [~, i_peak] = max(sigma_true_obs);
 fprintf('Logistic growth: K=%.0f, r=%.3g, t0=%.3g, t in [%.0f, %.0f]\n', ...
     K, r, t0, t_min, t_max);
-fprintf('NB-inspired Gaussian: Nu=%d times, nRep=%d, alpha=%.4g (N=%d obs)\n', ...
-    numel(t_obs), nRep, alpha, numel(x_train));
-fprintf('True sigma largest at t=%.3g, max sigma=%.4g (Var=mu+alpha*mu^2)\n', ...
+fprintf('Additive Gaussian: Nu=%d times, nRep=%d, sigma=%.4g (%.0f%% of SD of true curve = %.4g) / %.4g (%.0f%% of SD) at t=%.0f (N=%d obs)\n', ...
+    numel(t_obs), nRep, sigma_base, 100 * noise_frac_base, sd_true_curve, ...
+    sigma_day7, 100 * noise_frac_day7, t_day7, numel(x_train));
+fprintf('True sigma largest at t=%.3g, max sigma=%.4g\n', ...
     t_obs(i_peak), sigma_true_obs(i_peak));
 
 %% Ground truth on plot grid + oracle noise for Model B
 x_grid = linspace(t_min, t_max, 500)';
 f_true = logistic(x_grid);
-sigma_true = sqrt(f_true + alpha .* f_true.^2);
+% Block-constant additive noise by nearest observation time (spike at Day 7)
+sigma_true = zeros(size(x_grid));
+for k = 1:numel(x_grid)
+    [~, j] = min(abs(t_obs - x_grid(k)));
+    sigma_true(k) = sigma_true_obs(j);
+end
 noise_var_oracle_tr = var_train_true;
 noise_var_oracle_te = sigma_true.^2;
 
@@ -173,7 +187,7 @@ fprintf('E: VHGPR done (iter=%d)\n', vhgpr_iter);
 
 %% Data-generation check: truth + replicates + empirical mean ± SD
 figure('Color', 'w', 'Position', [60, 80, 720, 420], ...
-    'Name', 'LG_het: NB-inspired data check');
+    'Name', 'LG_het: additive-noise data check');
 hold on; grid on;
 plot(x_grid, f_true, 'k-', 'LineWidth', 2.0, 'DisplayName', 'True \mu(t)');
 plot(x_train, y_train, 'ko', 'MarkerFaceColor', 'k', 'MarkerSize', 4, ...
@@ -182,7 +196,8 @@ errorbar(t_obs, mean_rep, sd_rep, 'b-', 'LineWidth', 1.4, 'Marker', 's', ...
     'MarkerFaceColor', 'b', 'MarkerSize', 6, ...
     'DisplayName', 'Replicate mean \pm emp. SD');
 xlabel('t'); ylabel('\mu(t) / observations');
-title(sprintf('NB-inspired hetero Gaussian (\\alpha=%.3g, nRep=%d)', alpha, nRep));
+title(sprintf('Additive hetero Gaussian (%.0f%% / %.0f%% of SD of true curve at Day %.0f, nRep=%d)', ...
+    100 * noise_frac_base, 100 * noise_frac_day7, t_day7, nRep));
 legend('Location', 'southeast');
 set(gca, 'FontSize', 12);
 xlim([t_min, t_max]);
@@ -246,14 +261,14 @@ fig3 = figure('Color', 'w', 'Position', [80, 120, 700, 420], ...
 ax3 = axes('Parent', fig3);
 hold(ax3, 'on'); grid(ax3, 'on');
 plot(ax3, x_grid, sigma_true, 'k-', 'LineWidth', 2.2, ...
-    'DisplayName', 'True \sigma(t) (NB-inspired)');
+    'DisplayName', 'True \sigma(t) (additive)');
 plot(ax3, x_grid, sigma_a, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
 plot(ax3, x_grid, sigma_b, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
 plot(ax3, x_grid, sigma_c, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
 plot(ax3, x_grid, sigma_d, 'c-', 'LineWidth', 1.5, 'DisplayName', 'D (NLML per-time)');
 plot(ax3, x_grid, sigma_e, 'b-', 'LineWidth', 1.5, 'DisplayName', 'E (VHGPR)');
 xlabel(ax3, 't'); ylabel(ax3, '\sigma_n(t)');
-title(ax3, 'Observation noise SD: NB-inspired truth vs models');
+title(ax3, 'Observation noise SD: additive truth vs models');
 set(ax3, 'FontSize', 12);
 xlim(ax3, [t_min, t_max]);
 
@@ -265,7 +280,7 @@ ax3L = axes('Parent', fig3L, 'Visible', 'off', 'XLim', [0 1], 'YLim', [0 1], ...
 hold(ax3L, 'on');
 h3L = gobjects(6, 1);
 h3L(1) = plot(ax3L, nan, nan, 'k-', 'LineWidth', 2.2, ...
-    'DisplayName', 'True \sigma(t) (NB-inspired)');
+    'DisplayName', 'True \sigma(t) (additive)');
 h3L(2) = plot(ax3L, nan, nan, 'r-.', 'LineWidth', 1.5, 'DisplayName', 'A (homo sn)');
 h3L(3) = plot(ax3L, nan, nan, 'g--', 'LineWidth', 1.5, 'DisplayName', 'B (oracle)');
 h3L(4) = plot(ax3L, nan, nan, 'm:', 'LineWidth', 1.6, 'DisplayName', 'C (empirical)');
@@ -285,38 +300,38 @@ lgd3.Position = [margin3, margin3, lp3(3), lp3(4)];
 ax3L.Position = [0 0 1 1];
 drawnow;
 
-% %% Save Figure 2 panels, Figure 3, and shared legends as EPS
-% plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
-%     'results', 'plots', 'Paper Draft 2', 'Log Growth');
-% if ~exist(plot_dir, 'dir')
-%     mkdir(plot_dir);
-% end
-% tab_list = {tab_a, tab_b, tab_c, tab_d, tab_e};
-% ax_list  = {ax_a, ax_b, ax_c, ax_d, ax_e};
-% name_list = {'LG_het_A_Homo_GP.eps', 'LG_het_B_Oracle_Hetero.eps', ...
-%     'LG_het_C_Empirical.eps', 'LG_het_D_NLML_per_time.eps', 'LG_het_E_VHGPR.eps'};
-% for i = 1:numel(tab_list)
-%     tg.SelectedTab = tab_list{i};
-%     ax_list{i}.Toolbar.Visible = 'off';
-%     disableDefaultInteractivity(ax_list{i});
-%     drawnow;
-%     out_path = fullfile(plot_dir, name_list{i});
-%     exportgraphics(ax_list{i}, out_path, 'ContentType', 'image');
-%     fprintf('Saved %s\n', out_path);
-% end
-% legend2_path = fullfile(plot_dir, 'LG_het_traj_legend.eps');
-% exportgraphics(fig2L, legend2_path, 'ContentType', 'image', 'BackgroundColor', 'white');
-% fprintf('Saved %s\n', legend2_path);
-%
-% ax3.Toolbar.Visible = 'off';
-% disableDefaultInteractivity(ax3);
-% drawnow;
-% noise_path = fullfile(plot_dir, 'LG_het_noise_SD.eps');
-% exportgraphics(ax3, noise_path, 'ContentType', 'image');
-% fprintf('Saved %s\n', noise_path);
-% legend3_path = fullfile(plot_dir, 'LG_het_noise_legend.eps');
-% exportgraphics(fig3L, legend3_path, 'ContentType', 'image', 'BackgroundColor', 'white');
-% fprintf('Saved %s\n', legend3_path);
+%% Save Figure 2 panels, Figure 3, and shared legends as EPS
+plot_dir = fullfile(fileparts(fileparts(fileparts(mfilename('fullpath')))), ...
+    'results', 'plots', 'Paper Draft 2', 'Log Growth');
+if ~exist(plot_dir, 'dir')
+    mkdir(plot_dir);
+end
+tab_list = {tab_a, tab_b, tab_c, tab_d, tab_e};
+ax_list  = {ax_a, ax_b, ax_c, ax_d, ax_e};
+name_list = {'LG_het_A_Homo_GP.eps', 'LG_het_B_Oracle_Hetero.eps', ...
+    'LG_het_C_Empirical.eps', 'LG_het_D_NLML_per_time.eps', 'LG_het_E_VHGPR.eps'};
+for i = 1:numel(tab_list)
+    tg.SelectedTab = tab_list{i};
+    ax_list{i}.Toolbar.Visible = 'off';
+    disableDefaultInteractivity(ax_list{i});
+    drawnow;
+    out_path = fullfile(plot_dir, name_list{i});
+    exportgraphics(ax_list{i}, out_path, 'ContentType', 'image');
+    fprintf('Saved %s\n', out_path);
+end
+legend2_path = fullfile(plot_dir, 'LG_het_traj_legend.eps');
+exportgraphics(fig2L, legend2_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+fprintf('Saved %s\n', legend2_path);
+
+ax3.Toolbar.Visible = 'off';
+disableDefaultInteractivity(ax3);
+drawnow;
+noise_path = fullfile(plot_dir, 'LG_het_noise_SD.eps');
+exportgraphics(ax3, noise_path, 'ContentType', 'image');
+fprintf('Saved %s\n', noise_path);
+legend3_path = fullfile(plot_dir, 'LG_het_noise_legend.eps');
+exportgraphics(fig3L, legend3_path, 'ContentType', 'image', 'BackgroundColor', 'white');
+fprintf('Saved %s\n', legend3_path);
 
 fprintf('\nDone.\n');
 
