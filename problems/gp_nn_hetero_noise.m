@@ -3,7 +3,9 @@ function varargout = gp_nn_hetero_noise(mode, hyp, x, y, noise_var, xs, noise_va
 %   Same API as gp_seiso_hetero_noise, using the neural-network arcsin kernel.
 %   nlml = gp_nn_hetero_noise('nlml', hyp, x, y, noise_var)
 %   [ymu, ys2, fmu, fs2] = gp_nn_hetero_noise('pred', hyp, x, y, noise_var, xs)
+%   dmu = gp_nn_hetero_noise('deriv', hyp, x, y, noise_var, xs)
 %   K_y = K_f + diag(noise_var). Optimizes hyp.cov only (ell, sf); hyp.lik ignored.
+%   'deriv' returns the posterior mean derivative dmu/dx* = K_df(xs,x)*alpha.
 
 if nargin < 7
     noise_var_star = [];
@@ -15,6 +17,8 @@ switch lower(mode)
     case 'pred'
         [varargout{1}, varargout{2}, varargout{3}, varargout{4}] = ...
             pred_core(hyp, x, y, noise_var, xs, noise_var_star);
+    case 'deriv'
+        varargout{1} = deriv_core(hyp, x, y, noise_var, xs);
     otherwise
         error('gp_nn_hetero_noise:UnknownMode', 'Unknown mode: %s', mode);
 end
@@ -87,6 +91,18 @@ else
 end
 end
 
+function dmu = deriv_core(hyp, x, y, noise_var, xs)
+% Posterior mean derivative: mu'(xs) = K_df(xs, x) * alpha, alpha = Ky\y.
+[Ky, z, ~, ell, sf2] = build_Ky(hyp, x, y, noise_var);
+x = x(:);
+xs = xs(:);
+L = chol(Ky, 'lower');
+alpha = L' \ (L \ z);
+K_df = nn_Kdf(xs, x, ell, sf2);
+dmu = K_df * alpha;
+dmu = dmu(:);
+end
+
 function [Ky, z, nTot, ell, sf2] = build_Ky(hyp, x, y, noise_var)
 x = x(:);
 y = y(:);
@@ -102,13 +118,27 @@ Ky = K_f + diag(noise_var + jitter);
 z = y;
 end
 
-function K = nn_Kff(xa, xb, ell, sf2)
-xa = xa(:); xb = xb(:);
+function [A, den, su, sv, ell2] = nn_A(xa, xb, ell)
 ell2 = ell^2;
 su = 1 + xa.^2;
 sv = 1 + xb.^2;
 S = 1 + xa * xb.';
-A = S ./ (sqrt(ell2 + su) * sqrt(ell2 + sv).');
+den = sqrt(ell2 + su) * sqrt(ell2 + sv).';
+A = S ./ den;
 A = max(min(A, 1 - 1e-12), -1 + 1e-12);
+end
+
+function K = nn_Kff(xa, xb, ell, sf2)
+xa = xa(:); xb = xb(:);
+A = nn_A(xa, xb, ell);
 K = sf2 * asin(A);
+end
+
+function K = nn_Kdf(xa, xb, ell, sf2)
+% cov(df/dx(xa), f(xb)) = dk/du  (matches gp_nn_deriv_obs)
+xa = xa(:); xb = xb(:);
+[A, den, ~, sv, ell2] = nn_A(xa, xb, ell);
+g = 1 ./ sqrt(1 - A.^2);
+Au = bsxfun(@times, (ell2 + sv).', bsxfun(@minus, (ell2 + 1) * xb.', xa)) ./ (den.^3);
+K = sf2 * g .* Au;
 end
