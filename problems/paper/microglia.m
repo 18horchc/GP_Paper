@@ -1,19 +1,34 @@
 % microglia.m — two independent GPs on the full and averaged microglia data.
 % Archived predecessor: archive/microglia_v3.m (kernel x mean grid).
 %
-% Datasets (both include the Day 35 Suenaga et al. 2015 points):
+% Datasets:
 %   Full    - all replicates, as in SINDy.m
 %   Average - one mean per day, as in SINDy_avg.m
+% Each is fit twice: Days 0-14 only (Day 35 dropped), plotted on 0-14,
+% and Days 0-35 (including the Day 35 Suenaga et al. 2015 points),
+% plotted on 0-35. The 0-14 series is also refit with Day 5 removed
+% from both M1 and M2.
 %
 % Models, fit independently for M1 and M2 on the raw count scale (not z-scored):
 %   Naive SE - zero mean, covSEiso, one learned homoscedastic sn (GPML)
 %   NN emp   - zero-mean covNNone with fixed empirical heteroscedastic noise,
 %              as in SINDy.m / SINDy_avg.m (gp_nn_hetero_noise; only ell, sf).
 %              On the average series the noise is the replicate sigma^2(t)
-%              from the full dataset (n = 1 days, including Day 35, use the
-%              pooled variance).
+%              from the matching full dataset (n = 1 days use the pooled
+%              variance). The 0-14 average uses the 0-14 full replicates;
+%              the 0-35 average uses the full series including Day 35.
+%              The Day-5-held-out average uses the 0-14 full replicates
+%              with Day 5 removed.
 %
-% Figures 1-2: full data. Figures 3-4: averaged data.
+% Figures 1-2: full data, Days 0-14. Figures 3-4: averaged data, Days 0-14.
+% Figures 5-6: full data, Days 0-35. Figures 7-8: averaged data, Days 0-35.
+% Figures 9-10: full data, Days 0-14 without Day 5.
+% Figures 11-12: averaged data, Days 0-14 without Day 5.
+% Figures 13-14: averaged NN, Days 0-35, mean and data only (no CI),
+% M1 and M2 on separate axes.
+% Figure 15: averaged SE, Days 0-35, M1 mean and data only (no CI).
+% Figure 16: d(mu)/dt at the averaged observation times. M1 uses the
+% averaged SE GP; M2 uses the averaged NN GP. Days 0-35.
 % Shared legend drawn once at the end.
 
 clear; close all; clc
@@ -22,6 +37,7 @@ clear; close all; clc
 k_plot    = 1.96;
 max_iters = -200;
 tgrid     = (0:0.1:35)';
+tgrid_14  = (0:0.1:14)';
 
 %% ===== Data: full replicates (SINDy.m) =====
 timeM1_full = [0, 1, 3, 5, 7, 14, ...
@@ -87,6 +103,14 @@ avg_ds = struct( ...
     'M1', struct('t', timeM1_avg, 'y', dataM1_avg), ...
     'M2', struct('t', timeM2_avg, 'y', dataM2_avg));
 
+% Days 0-14: drop the Day 35 Suenaga points from both series.
+full_ds_14 = drop_after_day(full_ds, 14);
+avg_ds_14  = drop_after_day(avg_ds, 14);
+
+% Days 0-14 with Day 5 removed from both phenotypes.
+full_ds_14_no5 = drop_day(full_ds_14, 5);
+avg_ds_14_no5  = drop_day(avg_ds_14, 5);
+
 %% ===== GPML setup =====
 gpml_folder_name = "C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Old\gpml-matlab-master\gpml-matlab-master";
 if ~exist('minimize', 'file')
@@ -117,28 +141,125 @@ sty.band_label = '95% CI';
 %% ===== Fit =====
 fprintf('=== Microglia: naive SE and SINDy NN on full and averaged data ===\n');
 
-fprintf('\n--- Full replicates: naive SE (zero mean, homoscedastic) ---\n');
+fprintf('\n--- Full replicates, Days 0-14: naive SE (zero mean, homoscedastic) ---\n');
+full_se_14 = fit_dataset_se(full_ds_14, tgrid_14, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
+
+fprintf('\n--- Full replicates, Days 0-14: zero-mean NN, empirical heteroscedastic noise ---\n');
+full_nn_14 = fit_dataset_nn(full_ds_14, tgrid_14, max_iters, k_plot, []);
+
+fprintf('\n--- Averaged series, Days 0-14: naive SE (zero mean, homoscedastic) ---\n');
+avg_se_14 = fit_dataset_se(avg_ds_14, tgrid_14, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
+
+fprintf('\n--- Averaged series, Days 0-14: zero-mean NN, empirical noise from full replicates ---\n');
+avg_nn_14 = fit_dataset_nn(avg_ds_14, tgrid_14, max_iters, k_plot, full_ds_14);
+
+fprintf('\n--- Full replicates, Days 0-35: naive SE (zero mean, homoscedastic) ---\n');
 full_se = fit_dataset_se(full_ds, tgrid, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
 
-fprintf('\n--- Full replicates: zero-mean NN, empirical heteroscedastic noise ---\n');
+fprintf('\n--- Full replicates, Days 0-35: zero-mean NN, empirical heteroscedastic noise ---\n');
 full_nn = fit_dataset_nn(full_ds, tgrid, max_iters, k_plot, []);
 
-fprintf('\n--- Averaged series: naive SE (zero mean, homoscedastic) ---\n');
+fprintf('\n--- Averaged series, Days 0-35: naive SE (zero mean, homoscedastic) ---\n');
 avg_se = fit_dataset_se(avg_ds, tgrid, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
 
-fprintf('\n--- Averaged series: zero-mean NN, empirical noise from full replicates ---\n');
+fprintf('\n--- Averaged series, Days 0-35: zero-mean NN, empirical noise from full replicates ---\n');
 avg_nn = fit_dataset_nn(avg_ds, tgrid, max_iters, k_plot, full_ds);
 
+fprintf('\n--- Full replicates, Days 0-14 without Day 5: naive SE (zero mean, homoscedastic) ---\n');
+full_se_14_no5 = fit_dataset_se(full_ds_14_no5, tgrid_14, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
+
+fprintf('\n--- Full replicates, Days 0-14 without Day 5: zero-mean NN, empirical heteroscedastic noise ---\n');
+full_nn_14_no5 = fit_dataset_nn(full_ds_14_no5, tgrid_14, max_iters, k_plot, []);
+
+fprintf('\n--- Averaged series, Days 0-14 without Day 5: naive SE (zero mean, homoscedastic) ---\n');
+avg_se_14_no5 = fit_dataset_se(avg_ds_14_no5, tgrid_14, inffunc, meanfunc, cov_se, likfunc, max_iters, k_plot);
+
+fprintf('\n--- Averaged series, Days 0-14 without Day 5: zero-mean NN, empirical noise from full replicates ---\n');
+avg_nn_14_no5 = fit_dataset_nn(avg_ds_14_no5, tgrid_14, max_iters, k_plot, full_ds_14_no5);
+
 %% ===== Figures =====
-fig1 = make_fit_figure(full_se, tgrid, sty, ...
-    'Figure 1 - Full data: naive SE (zero mean, homoscedastic)', [60, 60, 1240, 900]); %#ok<NASGU>
-fig2 = make_fit_figure(full_nn, tgrid, sty, ...
-    'Figure 2 - Full data: NN, empirical heteroscedastic noise', [100, 60, 1240, 900]); %#ok<NASGU>
-fig3 = make_fit_figure(avg_se, tgrid, sty, ...
-    'Figure 3 - Averaged data: naive SE (zero mean, homoscedastic)', [140, 60, 1240, 900]); %#ok<NASGU>
-fig4 = make_fit_figure(avg_nn, tgrid, sty, ...
-    'Figure 4 - Averaged data: NN, empirical heteroscedastic noise', [180, 60, 1240, 900]); %#ok<NASGU>
-make_shared_legend(sty.col_M1, sty.col_M2, sty.band_label, 'Microglia shared legend');
+% Figures 1-4: Days 0-14. Figures 5-8: Days 0-35 (no axes title).
+% Figures 9-12: Days 0-14 with Day 5 removed, plotted on 0-14.
+% fig1 = make_fit_figure(full_se_14, tgrid_14, sty, ...
+%     'Figure 1 - Full data, Days 0-14: naive SE (zero mean, homoscedastic)', [60, 60, 1240, 900]); %#ok<NASGU>
+% fig2 = make_fit_figure(full_nn_14, tgrid_14, sty, ...
+%     'Figure 2 - Full data, Days 0-14: NN, empirical heteroscedastic noise', [100, 60, 1240, 900]); %#ok<NASGU>
+% fig3 = make_fit_figure(avg_se_14, tgrid_14, sty, ...
+%     'Figure 3 - Averaged data, Days 0-14: naive SE (zero mean, homoscedastic)', [140, 60, 1240, 900]); %#ok<NASGU>
+% fig4 = make_fit_figure(avg_nn_14, tgrid_14, sty, ...
+%     'Figure 4 - Averaged data, Days 0-14: NN, empirical heteroscedastic noise', [180, 60, 1240, 900]); %#ok<NASGU>
+[fig5, ax5] = make_fit_figure(full_se, tgrid, sty, ...
+    'Figure 5 - Full data, Days 0-35: naive SE (zero mean, homoscedastic)', [220, 60, 1240, 900], false);
+[fig6, ax6] = make_fit_figure(full_nn, tgrid, sty, ...
+    'Figure 6 - Full data, Days 0-35: NN, empirical heteroscedastic noise', [260, 60, 1240, 900], false);
+[fig7, ax7] = make_fit_figure(avg_se, tgrid, sty, ...
+    'Figure 7 - Averaged data, Days 0-35: naive SE (zero mean, homoscedastic)', [300, 60, 1240, 900], false);
+[fig8, ax8] = make_fit_figure(avg_nn, tgrid, sty, ...
+    'Figure 8 - Averaged data, Days 0-35: NN, empirical heteroscedastic noise', [340, 60, 1240, 900], false);
+[fig13, ax13] = make_mean_figure(avg_nn.M1, tgrid, sty.col_M1, ...
+    'Figure 13 - M1 averaged data, Days 0-35: NN mean', [380, 60, 1240, 900]);
+[fig14, ax14] = make_mean_figure(avg_nn.M2, tgrid, sty.col_M2, ...
+    'Figure 14 - M2 averaged data, Days 0-35: NN mean', [420, 60, 1240, 900]);
+[fig15, ax15] = make_mean_figure(avg_se.M1, tgrid, sty.col_M1, ...
+    'Figure 15 - M1 averaged data, Days 0-35: SE mean', [460, 60, 1240, 900]);
+
+% Derivative of the GP mean at the averaged observation times.
+% M1: squared-exponential. M2: neural-network kernel.
+t_deriv = avg_ds.M1.t;
+dM1 = gp_seiso_mean_deriv(avg_se.M1.hyp, avg_se.M1.t, avg_se.M1.y, t_deriv);
+dM2 = gp_nn_hetero_noise('deriv', avg_nn.M2.hyp, avg_nn.M2.t, avg_nn.M2.y, ...
+    avg_nn.M2.noise_var, t_deriv);
+fprintf('\n--- GP mean derivatives at averaged times (M1 SE, M2 NN) ---\n');
+for i = 1:numel(t_deriv)
+    fprintf('  t=%g: dM1/dt=%.4f | dM2/dt=%.4f\n', t_deriv(i), dM1(i), dM2(i));
+end
+[fig16, ax16] = make_deriv_figure(t_deriv, dM1, dM2, sty, ...
+    'Figure 16 - Averaged data, Days 0-35: SE M1 and NN M2 mean derivatives', ...
+    [500, 40, 720, 900]);
+% fig9 = make_fit_figure(full_se_14_no5, tgrid_14, sty, ...
+%     'Figure 9 - Full data, Days 0-14 without Day 5: naive SE (zero mean, homoscedastic)', [380, 60, 1240, 900]); %#ok<NASGU>
+% fig10 = make_fit_figure(full_nn_14_no5, tgrid_14, sty, ...
+%     'Figure 10 - Full data, Days 0-14 without Day 5: NN, empirical heteroscedastic noise', [420, 60, 1240, 900]); %#ok<NASGU>
+% fig11 = make_fit_figure(avg_se_14_no5, tgrid_14, sty, ...
+%     'Figure 11 - Averaged data, Days 0-14 without Day 5: naive SE (zero mean, homoscedastic)', [460, 60, 1240, 900]); %#ok<NASGU>
+% fig12 = make_fit_figure(avg_nn_14_no5, tgrid_14, sty, ...
+%     'Figure 12 - Averaged data, Days 0-14 without Day 5: NN, empirical heteroscedastic noise', [500, 60, 1240, 900]); %#ok<NASGU>
+figL = make_shared_legend(sty.col_M1, sty.col_M2, sty.band_label, 'Microglia shared legend');
+
+%% ===== Save active figures and the shared legend as EPS =====
+plot_dir = 'C:\Users\chorc\OneDrive\Documents\Stroke Research\Gaussian Processes\Bio_Inf_GP_Code\results\plots\Paper Draft 2\Microglia';
+if ~exist(plot_dir, 'dir')
+    mkdir(plot_dir);
+end
+export_names = { ...
+    'Microglia_Full_Naive_SE.eps', ...
+    'Microglia_Full_NN.eps', ...
+    'Microglia_Averaged_Naive_SE.eps', ...
+    'Microglia_Averaged_NN.eps', ...
+    'Microglia_Averaged_NN_M1_mean.eps', ...
+    'Microglia_Averaged_NN_M2_mean.eps', ...
+    'Microglia_Averaged_SE_M1_mean.eps'};
+export_axes = {ax5, ax6, ax7, ax8, ax13, ax14, ax15};
+deriv_path = fullfile(plot_dir, 'Microglia_Averaged_deriv_SE_M1_NN_M2.eps');
+for i = 1:numel(export_axes)
+    ax = export_axes{i};
+    ax.Toolbar.Visible = 'off';
+    disableDefaultInteractivity(ax);
+    drawnow;
+    out_path = fullfile(plot_dir, export_names{i});
+    exportgraphics(ax, out_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+    fprintf('Saved %s\n', out_path);
+end
+for i = 1:numel(ax16)
+    ax16(i).Toolbar.Visible = 'off';
+    disableDefaultInteractivity(ax16(i));
+end
+drawnow;
+exportgraphics(fig16, deriv_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+fprintf('Saved %s\n', deriv_path);
+legend_path = fullfile(plot_dir, 'Microglia_legend.eps');
+exportgraphics(figL, legend_path, 'ContentType', 'vector', 'BackgroundColor', 'white');
+fprintf('Saved %s\n', legend_path);
 
 %% ===== Local functions =====
 
@@ -231,7 +352,10 @@ fit.lo = mu(:) - k_plot .* sf;
 fit.hi = mu(:) + k_plot .* sf;
 end
 
-function fig = make_fit_figure(fits, tgrid, sty, fig_name, fig_pos)
+function [fig, ax] = make_fit_figure(fits, tgrid, sty, fig_name, fig_pos, show_title)
+if nargin < 6
+    show_title = true;
+end
 fig = figure('Color', 'w', 'Position', fig_pos, 'Name', fig_name);
 ax = axes('Parent', fig);
 ax.Layer = 'top';
@@ -239,11 +363,80 @@ ax.FontSize = 24;
 hold(ax, 'on'); grid(ax, 'off'); box(ax, 'on');
 plot_phenotype(ax, tgrid, fits.M1, sty.col_M1, 'M1', sty.band_label);
 plot_phenotype(ax, tgrid, fits.M2, sty.col_M2, 'M2', sty.band_label);
-xlabel(ax, 'Time (days)', 'FontSize', 24);
+xlabel(ax, 'Time (Days)', 'FontSize', 24);
 ylabel(ax, 'cells/mm^2', 'FontSize', 24);
 xlim(ax, [tgrid(1), tgrid(end)]);
-title(ax, fig_name, 'FontSize', 16, 'Interpreter', 'none');
+if show_title
+    title(ax, fig_name, 'FontSize', 16, 'Interpreter', 'none');
+end
 ylim_auto_from_fit(ax, fits.M1, fits.M2);
+end
+
+function [fig, ax] = make_mean_figure(fit, tgrid, col, fig_name, fig_pos)
+% NN mean and averaged observations only. No confidence band.
+fig = figure('Color', 'w', 'Position', fig_pos, 'Name', fig_name);
+ax = axes('Parent', fig);
+ax.Layer = 'top';
+ax.FontSize = 24;
+hold(ax, 'on'); grid(ax, 'off'); box(ax, 'on');
+plot(ax, tgrid, fit.mu, '--', 'Color', col, 'LineWidth', 2, ...
+    'DisplayName', 'GP Mean');
+scatter(ax, fit.t, fit.y, 36, 'filled', ...
+    'MarkerFaceColor', col, 'MarkerEdgeColor', 'k', ...
+    'DisplayName', 'Obs Data');
+xlabel(ax, 'Time (Days)', 'FontSize', 24);
+ylabel(ax, 'cells/mm^2', 'FontSize', 24);
+xlim(ax, [tgrid(1), tgrid(end)]);
+vals = [fit.mu(:); fit.y(:)];
+pad = 0.05 * max(range(vals), 1);
+ylim(ax, [min(vals) - pad, max(vals) + pad]);
+end
+
+function [fig, ax] = make_deriv_figure(t, dM1, dM2, sty, fig_name, fig_pos)
+% Scatter of the GP mean derivative at the averaged observation times.
+fig = figure('Color', 'w', 'Position', fig_pos, 'Name', fig_name);
+tl = tiledlayout(fig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+ax = gobjects(2, 1);
+series = {dM1, dM2};
+colors = {sty.col_M1, sty.col_M2};
+ylabels = {'$\dot{M}_1(t)$', '$\dot{M}_2(t)$'};
+for i = 1:2
+    ax(i) = nexttile(tl);
+    ax(i).Layer = 'top';
+    ax(i).FontSize = 22;
+    hold(ax(i), 'on'); grid(ax(i), 'off'); box(ax(i), 'on');
+    scatter(ax(i), t, series{i}, 70, 'filled', ...
+        'MarkerFaceColor', colors{i}, 'MarkerEdgeColor', colors{i});
+    ylabel(ax(i), ylabels{i}, 'Interpreter', 'latex', 'FontSize', 24);
+    pad_x = 1;
+    xlim(ax(i), [min(t) - pad_x, max(t) + pad_x]);
+    vals = series{i}(:);
+    pad_y = 0.08 * max(range(vals), 1);
+    ylim(ax(i), [min(vals) - pad_y, max(vals) + pad_y]);
+end
+xlabel(tl, 'Time (Days)', 'FontSize', 24);
+end
+
+function dmu = gp_seiso_mean_deriv(hyp, x, y, xs)
+% Analytic posterior mean derivative for SE-iso + homoscedastic noise:
+%   mu'(xs) = K_df(xs, x) * alpha,  alpha = (K_f + sn^2 I)^{-1} y
+x = x(:); y = y(:); xs = xs(:);
+ell = exp(hyp.cov(1));
+sf2 = exp(2 * hyp.cov(2));
+sn2 = exp(2 * hyp.lik(1));
+
+Rxx = x - x.';
+K_f = sf2 * exp(-0.5 * (Rxx ./ ell).^2);
+jitter = 1e-8 * mean(diag(K_f));
+Ky = K_f + (sn2 + jitter) * eye(numel(x));
+L = chol(Ky, 'lower');
+alpha = L' \ (L \ y);
+
+R = xs - x.';
+Kxc = sf2 * exp(-0.5 * (R ./ ell).^2);
+K_df = -Kxc .* (R ./ ell^2);
+dmu = K_df * alpha;
+dmu = dmu(:);
 end
 
 function plot_phenotype(ax, tgrid, fit, col, name, band_label)
@@ -293,6 +486,28 @@ lp = lgd.Position;
 margin = 6;
 figL.Position(3:4) = [lp(3) + 2 * margin, lp(4) + 2 * margin];
 lgd.Position = [margin, margin, lp(3), lp(4)];
+end
+
+function ds_out = drop_day(ds, t_drop)
+% Drop observations at t_drop from both phenotypes.
+ds_out = ds;
+ds_out.name = sprintf('%s_no_%g', ds.name, t_drop);
+for name = {'M1', 'M2'}
+    ph = ds.(name{1});
+    keep = abs(ph.t - t_drop) > 1e-12;
+    ds_out.(name{1}) = struct('t', ph.t(keep), 'y', ph.y(keep));
+end
+end
+
+function ds_out = drop_after_day(ds, t_max)
+% Keep observations with time <= t_max (Day 35 is dropped when t_max = 14).
+ds_out = ds;
+ds_out.name = sprintf('%s_0_%g', ds.name, t_max);
+for name = {'M1', 'M2'}
+    ph = ds.(name{1});
+    keep = ph.t <= t_max + 1e-12;
+    ds_out.(name{1}) = struct('t', ph.t(keep), 'y', ph.y(keep));
+end
 end
 
 function noise_var = map_emp_noise_to_times(t, t_unique, s2_unique)
