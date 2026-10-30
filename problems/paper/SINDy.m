@@ -31,7 +31,8 @@
 %   - Section E keeps the terms selected in more than 20% of the fits,
 %     refits every draw on those terms by least squares, and solves the
 %     models built from the mean and the median of each refit coefficient
-%     (figures 310-312).
+%     (figures 310-314). Figure 315 samples models from a multivariate
+%     Gaussian over the refit coefficients and solves them to day 200.
 %   - Saves everything to results/SINDy_ensemble/SINDy_ensemble_results.mat.
 
 clear; close all; clc
@@ -111,7 +112,7 @@ mean_noise = @meanConst;
 likfunc    = @likGauss;
 inffunc    = @infGaussLik;
 
-s2_day0_m1 = day0_sample_var(timeM1, dataM1);
+s2_day0_m1 = day0_sample_var(timeM1, dataM1); %take variance of day 0 points (in this data set  = 50)
 fitM1 = fit_m1_day0(timeM1, dataM1, s2_day0_m1, tgrid, meanfunc, covM1, max_iters);
 fitM2 = fit_full_lognoise(timeM2, dataM2, tgrid, meanfunc, mean_noise, ...
     covM2, inffunc, likfunc, max_iters);
@@ -265,6 +266,8 @@ ens_cfg.nShow        = 40;
 ens_cfg.nFwdModels   = 6;
 ens_cfg.blowup       = 1e5;    % cells/mm^2; |state| above this counts as divergence
 ens_cfg.subset_pThresh = 0.2;  % section E keeps terms selected in more than this fraction of fits
+ens_cfg.gauss_nSamples = 1000; % Figure 315: models drawn from the Gaussian over refit coefficients
+ens_cfg.gauss_tEnd = 200;      % Figure 315: simulation end time (days), 0.5-day grid
 ens_cfg.save_results = true;
 
 tData = [timeM1; timeM2];
@@ -292,6 +295,11 @@ postM2 = joint_state_deriv_posterior(fitM2.hyp, 'matern5', meanfunc, covM2, ...
     timeM2, dataM2, noiseM2, tGrid);
 SM1 = joint_sampler(postM1.Sigma, ens_cfg.rel_jitters);
 SM2 = joint_sampler(postM2.Sigma, ens_cfg.rel_jitters);
+%The draws are of the latent curve. No observation noise is added at the 
+% grid, so the trajectories are possible mean curves, not simulated 
+% replicate measurements.
+
+
 [fmuE1, fs2E1] = pred_fixed_noise(fitM1.hyp, meanfunc, covM1, timeM1, dataM1, noiseM1, tGrid);
 [fmuE2, fs2E2] = pred_fixed_noise(fitM2.hyp, meanfunc, covM2, timeM2, dataM2, noiseM2, tGrid);
 [dmuE1, ds2E1] = deriv_fixed_noise(fitM1.hyp, 'se', meanfunc, covM1, timeM1, dataM1, noiseM1, tGrid);
@@ -301,6 +309,7 @@ report_joint_post('M2', postM2, fmuE2, fs2E2, dmuE2, ds2E2, SM2);
 
 % Rejection sampling: a draw is rejected as a whole if any M1 or M2 state on
 % the grid is negative
+%Sampling with rejection: M1 and M2 are drawn independently, and the pair  is rejected if any state value on the grid is negative. This repeats until 500 pairs are accepted.
 rng(ens_cfg.seed);
 [Xsamples, dXsamples, acc] = draw_nonneg_pairs(postM1, SM1, postM2, SM2, ...
     nSamples, ens_cfg.maxDraws);
@@ -331,32 +340,35 @@ fprintf(['Pairing check (max |x(1) + int dx - x| / range x): matched median %.3f
     'mismatched median %.3f\n'], median(pair_err(:)), median(pair_err_mismatch(:)));
 
 %% Per-trajectory STLS fits
+% Fits one SINDy model to each of the 500 sampled trajectories, keeping every fit separate.
 % No pooling or averaging across draws. A failed fit stays NaN.
-XiSamples = nan(nLib, 2, nSamples);
+XiSamples = nan(nLib, 2, nSamples); %Coefficients for each draw
 fit_ok = false(nSamples, 1);
-fit_msg = repmat({''}, nSamples, 1);
-condRaw = nan(nSamples, 1);
-condStd = nan(nSamples, 1);
-rankRaw = nan(nSamples, 1);
-rankStd = nan(nSamples, 1);
-cosSum = zeros(nLib);
-vminAbsSum = zeros(nLib, 1);
+fit_msg = repmat({''}, nSamples, 1); %The reason for any failure
+condRaw = nan(nSamples, 1); %Condition number of each draw's library: raw
+condStd = nan(nSamples, 1); %Condition number of each draw's library: with each column scaled to unit length
+rankRaw = nan(nSamples, 1); %Numerical rank of each draw's library, raw 
+rankStd = nan(nSamples, 1); %Numerical rank of each draw's library, unit-length
+cosSum = zeros(nLib); %Running sum of the absolute cosine between each pair of columns
+vminAbsSum = zeros(nLib, 1); %Running sum of how much each term contributes to the library's weakest direction
 ws_fit = warning;
 warning('off', 'MATLAB:rankDeficientMatrix');
 warning('off', 'MATLAB:nearlySingularMatrix');
 warning('off', 'MATLAB:singularMatrix');
 for j = 1:nSamples
-    Th = sindy_library(Xsamples(:, 1, j), Xsamples(:, 2, j));
+    Th = sindy_library(Xsamples(:, 1, j), Xsamples(:, 2, j)); %Build the library
+    %Conditioning diagnostics (None of these affect the fit; they're only for reporting.):
     sv = svd(Th);
-    rankRaw(j) = sum(sv > max(size(Th)) * eps(sv(1)));
-    condRaw(j) = sv(1) / sv(end);
-    Thn = Th ./ max(sqrt(sum(Th.^2, 1)), realmin);
+    rankRaw(j) = sum(sv > max(size(Th)) * eps(sv(1))); %counts singular values above MATLAB's default rank tolerance.
+    condRaw(j) = sv(1) / sv(end); %is the ratio of the largest to the smallest singular value.
+    Thn = Th ./ max(sqrt(sum(Th.^2, 1)), realmin); %Unit-length library
     [~, Sn, Vn] = svd(Thn, 'econ');
     svn = diag(Sn);
     rankStd(j) = sum(svn > max(size(Thn)) * eps(svn(1)));
     condStd(j) = svn(1) / svn(end);
-    cosSum = cosSum + abs(Thn' * Thn);
-    vminAbsSum = vminAbsSum + abs(Vn(:, end));
+    cosSum = cosSum + abs(Thn' * Thn); %Pairwise similarity
+    vminAbsSum = vminAbsSum + abs(Vn(:, end)); %Weakest direction 
+    % Fit with STLS: 
     try
         Xi_j = stls(Th, dXsamples(:, :, j), ens_cfg.lambda);
         if any(~isfinite(Xi_j(:)))
@@ -366,10 +378,10 @@ for j = 1:nSamples
             fit_ok(j) = true;
         end
     catch ME
-        fit_msg{j} = ME.message;
+        fit_msg{j} = ME.message; %Handling failures
     end
 end
-warning(ws_fit);
+warning(ws_fit); %Rank-deficiency warnings are turned off during the loop, because \ would otherwise print one for nearly every draw.
 valid = find(fit_ok);
 nValid = numel(valid);
 fprintf('STLS fits: %d of %d succeeded (lambda = %g).\n', nValid, nSamples, ens_cfg.lambda);
@@ -381,6 +393,12 @@ if nValid == 0
 end
 
 %% A-B. Summary statistics of the coefficient ensemble
+%It condenses the 500 separate fits from the previous section into summaries you can read. It answers three questions:
+    %How often is each term selected? This is the selection frequency.
+    %What values does each coefficient take? It reports this two ways: over all fits, and only over fits that selected the term.
+    %Which combinations of terms appear together? These are the sparsity patterns.
+
+
 CvAll = XiSamples(:, :, valid);
 selFreq = zeros(nLib, 2);
 statsU = zeros(nLib, 5, 2);
@@ -413,6 +431,9 @@ for p = 1:min(5, size(patU, 1))
 end
 
 %% C. Library conditioning
+% Diagnostic Section
+
+%Condition numbers
 lc = log10(condRaw);
 lcs = log10(condStd);
 fprintf('\nLibrary conditioning over %d draws:\n', nSamples);
@@ -420,8 +441,12 @@ fprintf('  log10 cond (raw):       median %.2f, 95%% range [%.2f, %.2f]\n', ...
     median(lc), pct_mid(lc, 2.5), pct_mid(lc, 97.5));
 fprintf('  log10 cond (unit-norm): median %.2f, 95%% range [%.2f, %.2f]\n', ...
     median(lcs), pct_mid(lcs, 2.5), pct_mid(lcs, 97.5));
+
+% Numerical rank
 fprintf('  numerically rank deficient (raw): %d | (unit-norm): %d of %d (full rank = %d)\n', ...
     nnz(rankRaw < nLib), nnz(rankStd < nLib), nSamples, nLib);
+
+% Which terms are entangled
 cosMean = cosSum / nSamples;
 [iP, jP] = find(triu(cosMean, 1) > 0.995);
 if isempty(iP)
@@ -456,6 +481,7 @@ if any(sdMask(:)) && nValid > 2
 end
 
 %% D. Forward simulation of ensemble models on the data domain
+% This section checks whether each fitted SINDy model, solved forward in time as an ODE, actually reproduces trajectories that look like the data.
 % Each model starts from its own sampled state at t = tGrid(1). The median
 % model starts from the GP posterior mean there.
 fwd_status = repmat({'not run'}, nSamples, 1);
@@ -499,26 +525,26 @@ idxFwd = feasIdx(sort(randperm(numel(feasIdx), min(ens_cfg.nFwdModels, numel(fea
 
 %% Figures 301-306
 % 301: GP trajectory samples (Figure A)
-fig301 = figure(301);
-set(fig301, 'Color', 'w', 'Name', 'Ensemble: GP state samples', 'WindowStyle', 'docked');
-tl301 = tiledlayout(fig301, 1, 2, 'TileSpacing', 'compact');
-plot_sample_panel(nexttile(tl301), tgrid, muM1_grid, sfM1_grid, k_plot, tGrid, ...
-    reshape(Xsamples(:, 1, idxShow), nGrid, []), timeM1, dataM1, 'k', ...
-    sprintf('M1: %d of %d draws', numel(idxShow), nSamples), 'cells/mm^2', xlE);
-plot_sample_panel(nexttile(tl301), tgrid, muM2_grid, sfM2_grid, k_plot, tGrid, ...
-    reshape(Xsamples(:, 2, idxShow), nGrid, []), timeM2, dataM2, 'r', ...
-    sprintf('M2: %d of %d draws', numel(idxShow), nSamples), 'cells/mm^2', xlE);
+% fig301 = figure(301);
+% set(fig301, 'Color', 'w', 'Name', 'Ensemble: GP state samples', 'WindowStyle', 'docked');
+% tl301 = tiledlayout(fig301, 1, 2, 'TileSpacing', 'compact');
+% plot_sample_panel(nexttile(tl301), tgrid, muM1_grid, sfM1_grid, k_plot, tGrid, ...
+%     reshape(Xsamples(:, 1, idxShow), nGrid, []), timeM1, dataM1, 'k', ...
+%     sprintf('M1: %d of %d draws', numel(idxShow), nSamples), 'cells/mm^2', xlE);
+% plot_sample_panel(nexttile(tl301), tgrid, muM2_grid, sfM2_grid, k_plot, tGrid, ...
+%     reshape(Xsamples(:, 2, idxShow), nGrid, []), timeM2, dataM2, 'r', ...
+%     sprintf('M2: %d of %d draws', numel(idxShow), nSamples), 'cells/mm^2', xlE);
 
 % 302: paired derivative samples, same draws as 301 (Figure B)
-fig302 = figure(302);
-set(fig302, 'Color', 'w', 'Name', 'Ensemble: GP derivative samples', 'WindowStyle', 'docked');
-tl302 = tiledlayout(fig302, 1, 2, 'TileSpacing', 'compact');
-plot_sample_panel(nexttile(tl302), tgrid50, dmuM1_grid, dsfM1_grid, k_plot, tGrid, ...
-    reshape(dXsamples(:, 1, idxShow), nGrid, []), [], [], 'k', ...
-    'dM1/dt (paired with the draws in Figure 301)', 'cells/mm^2/day', xlE);
-plot_sample_panel(nexttile(tl302), tgrid50, dmuM2_grid, dsfM2_grid, k_plot, tGrid, ...
-    reshape(dXsamples(:, 2, idxShow), nGrid, []), [], [], 'r', ...
-    'dM2/dt (paired with the draws in Figure 301)', 'cells/mm^2/day', xlE);
+% fig302 = figure(302);
+% set(fig302, 'Color', 'w', 'Name', 'Ensemble: GP derivative samples', 'WindowStyle', 'docked');
+% tl302 = tiledlayout(fig302, 1, 2, 'TileSpacing', 'compact');
+% plot_sample_panel(nexttile(tl302), tgrid50, dmuM1_grid, dsfM1_grid, k_plot, tGrid, ...
+%     reshape(dXsamples(:, 1, idxShow), nGrid, []), [], [], 'k', ...
+%     'dM1/dt (paired with the draws in Figure 301)', 'cells/mm^2/day', xlE);
+% plot_sample_panel(nexttile(tl302), tgrid50, dmuM2_grid, dsfM2_grid, k_plot, tGrid, ...
+%     reshape(dXsamples(:, 2, idxShow), nGrid, []), [], [], 'r', ...
+%     'dM2/dt (paired with the draws in Figure 301)', 'cells/mm^2/day', xlE);
 
 % 303: term selection frequency
 fig303 = figure(303);
@@ -534,7 +560,7 @@ legend({'dM1/dt', 'dM2/dt'}, 'Location', 'northeast');
 title(sprintf('STLS \\lambda = %g, %d valid fits', ens_cfg.lambda, nValid));
 box on
 
-% 307: distribution of each coefficient over the valid fits that selected it.
+%307: distribution of each coefficient over the valid fits that selected it.
 % Unselected fits (exactly 0) are left out so they do not swamp the histogram;
 % the title gives P(sel) = selection frequency. One tile per coefficient
 % because the terms differ by orders of magnitude.
@@ -542,7 +568,7 @@ box on
 fig307 = figure(307);
 set(fig307, 'Color', 'w', 'Name', 'Ensemble: coefficient distributions', 'WindowStyle', 'docked');
 tl307 = tiledlayout(fig307, 4, ceil(nLib / 2), 'TileSpacing', 'compact', 'Padding', 'compact');
-histCols = {[0.2 0.2 0.2], [0.85 0.2 0.2]};
+ histCols = {[0.2 0.2 0.2], [0.85 0.2 0.2]};
 for s = 1:2
     for k = 1:nLib
         ax = nexttile(tl307);
@@ -567,133 +593,136 @@ end
 title(tl307, sprintf('Coefficients over %d valid fits when selected (STLS \\lambda = %g)', ...
     nValid, ens_cfg.lambda));
 
-% 304: coefficient distributions conditional on selection
-fig304 = figure(304);
-set(fig304, 'Color', 'w', 'Name', 'Ensemble: coefficient distributions', 'Position', [60 60 1400 520]);
-tl304 = tiledlayout(fig304, 1, 2, 'TileSpacing', 'compact');
-cols = {'k', 'r'};
-for s = 1:2
-    ax = nexttile(tl304);
-    hold(ax, 'on');
-    for k = 1:nLib
-        if selFreq(k, s) > 0
-            plot(ax, [k k], statsC(k, 4:5, s), '-', 'Color', cols{s}, 'LineWidth', 2.5);
-            plot(ax, k, statsC(k, 2, s), 'o', 'Color', cols{s}, 'MarkerFaceColor', cols{s});
-        end
-    end
-    yline(ax, 0, ':');
-    hold(ax, 'off');
-    set(ax, 'XTick', 1:nLib, 'XTickLabel', lib_names, 'XTickLabelRotation', 45, ...
-        'TickLabelInterpreter', 'none', 'FontSize', 12, 'YScale', 'linear');
-    xlim(ax, [0.5, nLib + 0.5]);
-    ylabel(ax, 'Coefficient');
-    title(ax, sprintf('%s: median and 95%% range when selected', eqn_names{s}));
-    box(ax, 'on');
-end
+%304: coefficient distributions conditional on selection
+% fig304 = figure(304);
+% set(fig304, 'Color', 'w', 'Name', 'Ensemble: coefficient distributions', 'Position', [60 60 1400 520]);
+% tl304 = tiledlayout(fig304, 1, 2, 'TileSpacing', 'compact');
+ cols = {'k', 'r'};
+% for s = 1:2
+%     ax = nexttile(tl304);
+%     hold(ax, 'on');
+%     for k = 1:nLib
+%         if selFreq(k, s) > 0
+%             plot(ax, [k k], statsC(k, 4:5, s), '-', 'Color', cols{s}, 'LineWidth', 2.5);
+%             plot(ax, k, statsC(k, 2, s), 'o', 'Color', cols{s}, 'MarkerFaceColor', cols{s});
+%         end
+%     end
+%     yline(ax, 0, ':');
+%     hold(ax, 'off');
+%     set(ax, 'XTick', 1:nLib, 'XTickLabel', lib_names, 'XTickLabelRotation', 45, ...
+%         'TickLabelInterpreter', 'none', 'FontSize', 12, 'YScale', 'linear');
+%     xlim(ax, [0.5, nLib + 0.5]);
+%     ylabel(ax, 'Coefficient');
+%     title(ax, sprintf('%s: median and 95%% range when selected', eqn_names{s}));
+%     box(ax, 'on');
+% end
 
 % 305: conditioning (Figure E)
-fig305 = figure(305);
-set(fig305, 'Color', 'w', 'Name', 'Ensemble: library conditioning', 'Position', [60 60 1300 500]);
-tl305 = tiledlayout(fig305, 1, 2, 'TileSpacing', 'compact');
-ax = nexttile(tl305);
-histogram(ax, lc, 30, 'FaceColor', [0.5 0.5 0.5]);
-hold(ax, 'on');
-histogram(ax, lcs, 30, 'FaceColor', [0 0.45 0.75]);
-hold(ax, 'off');
-legend(ax, {'raw library', 'unit-norm columns'});
-xlabel(ax, 'log_{10} condition number');
-ylabel(ax, 'Draws');
-set(ax, 'FontSize', 14);
-ax = nexttile(tl305);
-scatter(ax, lcs(valid), coefDev(valid) + eps, 15, 'filled', 'MarkerFaceAlpha', 0.5);
-set(ax, 'YScale', 'log', 'FontSize', 14);
-xlabel(ax, 'log_{10} cond (unit-norm library)');
-ylabel(ax, 'RMS coefficient z-deviation from median');
-box(ax, 'on');
+% fig305 = figure(305);
+% set(fig305, 'Color', 'w', 'Name', 'Ensemble: library conditioning', 'Position', [60 60 1300 500]);
+% tl305 = tiledlayout(fig305, 1, 2, 'TileSpacing', 'compact');
+% ax = nexttile(tl305);
+% histogram(ax, lc, 30, 'FaceColor', [0.5 0.5 0.5]);
+% hold(ax, 'on');
+% histogram(ax, lcs, 30, 'FaceColor', [0 0.45 0.75]);
+% hold(ax, 'off');
+% legend(ax, {'raw library', 'unit-norm columns'});
+% xlabel(ax, 'log_{10} condition number');
+% ylabel(ax, 'Draws');
+% set(ax, 'FontSize', 14);
+% ax = nexttile(tl305);
+% scatter(ax, lcs(valid), coefDev(valid) + eps, 15, 'filled', 'MarkerFaceAlpha', 0.5);
+% set(ax, 'YScale', 'log', 'FontSize', 14);
+% xlabel(ax, 'log_{10} cond (unit-norm library)');
+% ylabel(ax, 'RMS coefficient z-deviation from median');
+% box(ax, 'on');
 
 % 306: forward simulations (Figure F)
-fig306 = figure(306);
-set(fig306, 'Color', 'w', 'Name', 'Ensemble: forward simulations', 'WindowStyle', 'docked');
-tl306 = tiledlayout(fig306, 1, 2, 'TileSpacing', 'compact');
-fwdCols = lines(numel(idxFwd));
-gpMu = {muM1_grid, muM2_grid};
-gpSd = {sfM1_grid, sfM2_grid};
-tObsC = {timeM1, timeM2};
-yObsC = {dataM1, dataM2};
-for s = 1:2
-    ax = nexttile(tl306);
-    hold(ax, 'on');
-    fill(ax, [tgrid; flipud(tgrid)], [gpMu{s} + k_plot * gpSd{s}; flipud(gpMu{s} - k_plot * gpSd{s})], ...
-        cols{s}, 'FaceAlpha', 0.12, 'EdgeColor', 'none');
-    if nnz(fwdFeas) > 1
-        env = zeros(nGrid, 2);
-        for i = 1:nGrid
-            env(i, :) = pct_mid(reshape(fwd_sol(i, s, fwdFeas), [], 1), [2.5, 97.5]);
-        end
-        fill(ax, [tGrid; flipud(tGrid)], [env(:, 2); flipud(env(:, 1))], [0.3 0.3 0.3], ...
-            'FaceAlpha', 0.18, 'EdgeColor', 'none');
-    end
-    for p = 1:numel(idxFwd)
-        j = idxFwd(p);
-        if ~isempty(fwd_sol(:, s, j)) && all(isfinite(fwd_sol(:, s, j)))
-            plot(ax, tGrid, fwd_sol(:, s, j), '-', 'Color', fwdCols(p, :), 'LineWidth', 1.2);
-        end
-    end
-    if ~isempty(simMed.y)
-        plot(ax, simMed.t, simMed.y(:, s), '--', 'Color', cols{s}, 'LineWidth', 2.5);
-    end
-    scatter(ax, tObsC{s}, yObsC{s}, 40, cols{s}, 'filled');
-    hold(ax, 'off');
-    xlim(ax, xlE);
-    xlabel(ax, 'Time (Days)');
-    ylabel(ax, 'cells/mm^2');
-    set(ax, 'FontSize', 12);
-    box(ax, 'on');
-end
+% fig306 = figure(306);
+% set(fig306, 'Color', 'w', 'Name', 'Ensemble: forward simulations', 'WindowStyle', 'docked');
+% tl306 = tiledlayout(fig306, 1, 2, 'TileSpacing', 'compact');
+ fwdCols = lines(numel(idxFwd));
+ gpMu = {muM1_grid, muM2_grid};
+ gpSd = {sfM1_grid, sfM2_grid};
+ tObsC = {timeM1, timeM2};
+ yObsC = {dataM1, dataM2};
+% for s = 1:2
+%     ax = nexttile(tl306);
+%     hold(ax, 'on');
+%     fill(ax, [tgrid; flipud(tgrid)], [gpMu{s} + k_plot * gpSd{s}; flipud(gpMu{s} - k_plot * gpSd{s})], ...
+%         cols{s}, 'FaceAlpha', 0.12, 'EdgeColor', 'none');
+%     if nnz(fwdFeas) > 1
+%         env = zeros(nGrid, 2);
+%         for i = 1:nGrid
+%             env(i, :) = pct_mid(reshape(fwd_sol(i, s, fwdFeas), [], 1), [2.5, 97.5]);
+%         end
+%         fill(ax, [tGrid; flipud(tGrid)], [env(:, 2); flipud(env(:, 1))], [0.3 0.3 0.3], ...
+%             'FaceAlpha', 0.18, 'EdgeColor', 'none');
+%     end
+%     for p = 1:numel(idxFwd)
+%         j = idxFwd(p);
+%         if ~isempty(fwd_sol(:, s, j)) && all(isfinite(fwd_sol(:, s, j)))
+%             plot(ax, tGrid, fwd_sol(:, s, j), '-', 'Color', fwdCols(p, :), 'LineWidth', 1.2);
+%         end
+%     end
+%     if ~isempty(simMed.y)
+%         plot(ax, simMed.t, simMed.y(:, s), '--', 'Color', cols{s}, 'LineWidth', 2.5);
+%     end
+%     scatter(ax, tObsC{s}, yObsC{s}, 40, cols{s}, 'filled');
+%     hold(ax, 'off');
+%     xlim(ax, xlE);
+%     xlabel(ax, 'Time (Days)');
+%     ylabel(ax, 'cells/mm^2');
+%     set(ax, 'FontSize', 12);
+%     box(ax, 'on');
+% end
 
 % 308/309: the individual model drawn as the second thin curve in Figure 306
 % (idxFwd(2), the orange-red line), started from its own sampled day-0 state
 % as in Figure 306.
-pickFwd = 6;
-pick = struct('pos', pickFwd, 'idx', [], 'Xi', [], 'x0', [], 'sim14', [], 'sim50', []);
-if numel(idxFwd) < pickFwd
-    warning('SINDy:PickModel', 'Fewer than %d individual models; figures 308-309 skipped.', pickFwd);
-else
-    pick.idx = idxFwd(pickFwd);
-    pick.Xi = XiSamples(:, :, pick.idx);
-    pick.x0 = Xsamples(1, :, pick.idx)';
-    ws_pk = warning;
-    warning('off', 'MATLAB:ode15s:IntegrationTolNotMet');
-    pick.sim14 = simulate_sindy(pick.Xi, pick.x0, (0:0.1:14)', ens_cfg.blowup);
-    pick.sim50 = simulate_sindy(pick.Xi, pick.x0, tgrid50, ens_cfg.blowup);
-    warning(ws_pk);
-    fprintf(['\nFigure 306 individual model %d (draw %d), figures 308-309. ' ...
-        'x0 = sampled day-0 state = [%.4g, %.4g]\n'], ...
-        pickFwd, pick.idx, pick.x0);
-    fprintf('  dM1/dt = %s\n', format_sindy_eq(pick.Xi(:, 1), lib_names));
-    fprintf('  dM2/dt = %s\n', format_sindy_eq(pick.Xi(:, 2), lib_names));
-    fprintf('  day 0-14: %s %s | day 0-50: %s %s | days 0-14 ok and nonnegative: %d\n', ...
-        pick.sim14.status, pick.sim14.msg, pick.sim50.status, pick.sim50.msg, fwdFeas(pick.idx));
-
-    fig308 = figure(308);
-    set(fig308, 'Color', 'w', 'Name', sprintf('Ensemble: model from draw %d, days 0-14', pick.idx), ...
-        'WindowStyle', 'docked');
-    ax = axes(fig308);
-    plot_ode_with_data(ax, pick.sim14, timeM1, dataM1, timeM2, dataM2, [0, 14]);
-
-    % Same model to day 50, with the held-out day 35 points (filled diamonds).
-    fig309 = figure(309);
-    set(fig309, 'Color', 'w', 'Name', sprintf('Ensemble: model from draw %d, days 0-50', pick.idx), ...
-        'WindowStyle', 'docked');
-    ax = axes(fig309);
-    plot_ode_with_data(ax, pick.sim50, timeM1, dataM1, timeM2, dataM2, [0, 50]);
-    hold(ax, 'on');
-    scatter(ax, timeM1_hold, dataM1_hold, 60, 'k', 'd', 'filled');
-    scatter(ax, timeM2_hold, dataM2_hold, 60, 'r', 'd', 'filled');
-    hold(ax, 'off');
-end
+ pickFwd = 6;
+ pick = struct('pos', pickFwd, 'idx', [], 'Xi', [], 'x0', [], 'sim14', [], 'sim50', []);
+% if numel(idxFwd) < pickFwd
+%     warning('SINDy:PickModel', 'Fewer than %d individual models; figures 308-309 skipped.', pickFwd);
+% else
+%     pick.idx = idxFwd(pickFwd);
+%     pick.Xi = XiSamples(:, :, pick.idx);
+%     pick.x0 = Xsamples(1, :, pick.idx)';
+%     ws_pk = warning;
+%     warning('off', 'MATLAB:ode15s:IntegrationTolNotMet');
+%     pick.sim14 = simulate_sindy(pick.Xi, pick.x0, (0:0.1:14)', ens_cfg.blowup);
+%     pick.sim50 = simulate_sindy(pick.Xi, pick.x0, tgrid50, ens_cfg.blowup);
+%     warning(ws_pk);
+%     fprintf(['\nFigure 306 individual model %d (draw %d), figures 308-309. ' ...
+%         'x0 = sampled day-0 state = [%.4g, %.4g]\n'], ...
+%         pickFwd, pick.idx, pick.x0);
+%     fprintf('  dM1/dt = %s\n', format_sindy_eq(pick.Xi(:, 1), lib_names));
+%     fprintf('  dM2/dt = %s\n', format_sindy_eq(pick.Xi(:, 2), lib_names));
+%     fprintf('  day 0-14: %s %s | day 0-50: %s %s | days 0-14 ok and nonnegative: %d\n', ...
+%         pick.sim14.status, pick.sim14.msg, pick.sim50.status, pick.sim50.msg, fwdFeas(pick.idx));
+% 
+%     fig308 = figure(308);
+%     set(fig308, 'Color', 'w', 'Name', sprintf('Ensemble: model from draw %d, days 0-14', pick.idx), ...
+%         'WindowStyle', 'docked');
+%     ax = axes(fig308);
+%     plot_ode_with_data(ax, pick.sim14, timeM1, dataM1, timeM2, dataM2, [0, 14]);
+% 
+%     % Same model to day 50, with the held-out day 35 points (filled diamonds).
+%     fig309 = figure(309);
+%     set(fig309, 'Color', 'w', 'Name', sprintf('Ensemble: model from draw %d, days 0-50', pick.idx), ...
+%         'WindowStyle', 'docked');
+%     ax = axes(fig309);
+%     plot_ode_with_data(ax, pick.sim50, timeM1, dataM1, timeM2, dataM2, [0, 50]);
+%     hold(ax, 'on');
+%     scatter(ax, timeM1_hold, dataM1_hold, 60, 'k', 'd', 'filled');
+%     scatter(ax, timeM2_hold, dataM2_hold, 60, 'r', 'd', 'filled');
+%     hold(ax, 'off');
+% end
 
 %% E. Subset refit on the frequently selected terms
+% It turns the ensemble into two concrete models, using only the terms the ensemble selects often. 
+% It also checks how those two models compare with the full set of refit models. 
+
 % Keep term k in equation s if selFreq(k, s) > subset_pThresh. Every valid
 % draw is refit by ordinary least squares on the kept terms only, with no
 % thresholding, so every kept term is present in every refit and the refit
@@ -704,8 +733,8 @@ end
 % refit; the refit ensemble (envelope and median trajectory) is the reference.
 fprintf('\n=== Subset refit (terms selected in more than %.0f%% of fits) ===\n', ...
     100 * ens_cfg.subset_pThresh);
-keep = selFreq > ens_cfg.subset_pThresh;
-for s = 1:2
+keep = selFreq > ens_cfg.subset_pThresh; %keep if selected more than pThresh (currently at 20% of the time)
+for s = 1:2 %Each equation gets its own term set
     fprintf('  %s terms: {%s}\n', eqn_names{s}, strjoin(lib_names(keep(:, s)), ', '));
 end
 if ~all(any(keep, 1))
@@ -718,20 +747,22 @@ ws_sub = warning;
 warning('off', 'MATLAB:rankDeficientMatrix');
 warning('off', 'MATLAB:nearlySingularMatrix');
 warning('off', 'MATLAB:singularMatrix');
+% refit every draw on the kept terms
 for i = 1:nValid
     j = valid(i);
     Th = sindy_library(Xsamples(:, 1, j), Xsamples(:, 2, j));
     for s = 1:2
-        A = Th(:, keep(:, s));
+        A = Th(:, keep(:, s)); %Reduced library
         xi = zeros(nLib, 1);
-        xi(keep(:, s)) = A \ dXsamples(:, s, j);
+        xi(keep(:, s)) = A \ dXsamples(:, s, j); %Plain least squares with no threshold
         XiSub(:, s, i) = xi;
         condSub(i, s) = cond(A ./ max(sqrt(sum(A.^2, 1)), realmin));
     end
 end
 warning(ws_sub);
 
-XiSubMean = mean(XiSub, 3);
+%summarize the new distributions 
+XiSubMean = mean(XiSub, 3); %avg ceach coef over the draws
 XiSubMed = median(XiSub, 3);
 statsSub = nan(nLib, 5, 2);
 corrSub = cell(1, 2);
@@ -867,6 +898,185 @@ end
 title(tl312, sprintf(['Least-squares refit on terms with P(sel) > %.2f, %d draws ' ...
     '(solid: mean, dashed: median)'], ens_cfg.subset_pThresh, nValid));
 
+% 313: pairwise scatter plots of the refit coefficients, all kept terms of
+% both equations, one point per draw. Both equations are refit on the same
+% draw, so cross-equation pairs are meaningful too. Each title gives the
+% Pearson correlation of the pair.
+[kIdx, sIdx] = find(keep);
+nK = numel(kIdx);
+coefMat = zeros(nValid, nK);
+coefLbl = cell(1, nK);
+for q = 1:nK
+    coefMat(:, q) = reshape(XiSub(kIdx(q), sIdx(q), :), [], 1);
+    coefLbl{q} = sprintf('%s: %s', eqn_names{sIdx(q)}, lib_names{kIdx(q)});
+end
+corrAll = corrcoef(coefMat);
+fig313 = figure(313);
+set(fig313, 'Color', 'w', 'Name', 'Subset refit: pairwise coefficient correlations', 'WindowStyle', 'docked');
+% Pair (r, c) with r > c goes in tile (r-1, c); tiles above the diagonal stay empty.
+nPlot = max(nK - 1, 1);
+tl313 = tiledlayout(fig313, nPlot, nPlot, 'TileSpacing', 'compact', 'Padding', 'compact');
+for r = 2:nK
+    for c = 1:nK-1
+        ax = nexttile(tl313, (r - 2) * nPlot + c);
+        if c >= r
+            axis(ax, 'off');
+            continue
+        end
+        scatter(ax, coefMat(:, c), coefMat(:, r), 6, [0.3 0.3 0.3], 'filled', ...
+            'MarkerFaceAlpha', 0.3);
+        xlabel(ax, coefLbl{c}, 'Interpreter', 'none', 'FontSize', 8);
+        ylabel(ax, coefLbl{r}, 'Interpreter', 'none', 'FontSize', 8);
+        title(ax, sprintf('r = %.2f', corrAll(r, c)), 'FontSize', 9, 'FontWeight', 'normal');
+        set(ax, 'FontSize', 7);
+        box(ax, 'on');
+    end
+end
+title(tl313, sprintf('Pairwise refit coefficients over %d draws (one point per draw)', nValid));
+
+% 314: maximum-likelihood Gaussian fit (sample mean and sd from statsSub) to
+% each refit coefficient, over a faint pdf-scaled histogram. Skewness and
+% excess kurtosis near 0 indicate the Gaussian is a good description.
+gaussMu = nan(nLib, 2);
+gaussSd = nan(nLib, 2);
+gaussSkew = nan(nLib, 2);
+gaussExKurt = nan(nLib, 2);
+fig314 = figure(314);
+set(fig314, 'Color', 'w', 'Name', 'Subset refit: Gaussian fits to coefficients', 'WindowStyle', 'docked');
+tl314 = tiledlayout(fig314, 2, nKeepMax, 'TileSpacing', 'compact', 'Padding', 'compact');
+for s = 1:2
+    ks = find(keep(:, s))';
+    fprintf('\n--- %s: Gaussian fits to refit coefficients ---\n', eqn_names{s});
+    fprintf('%-12s | %11s %11s %9s %9s\n', 'term', 'mu', 'sd', 'skew', 'ex.kurt');
+    for p = 1:nKeepMax
+        ax = nexttile(tl314);
+        if p > numel(ks)
+            axis(ax, 'off');
+            continue
+        end
+        k = ks(p);
+        cv = reshape(XiSub(k, s, :), [], 1);
+        mu = statsSub(k, 1, s);
+        sd = statsSub(k, 3, s);
+        cc = cv - mu;
+        m2 = mean(cc.^2);
+        gaussMu(k, s) = mu;
+        gaussSd(k, s) = sd;
+        if m2 > 0
+            gaussSkew(k, s) = mean(cc.^3) / m2^1.5;
+            gaussExKurt(k, s) = mean(cc.^4) / m2^2 - 3;
+        end
+        fprintf('%-12s | %11.4g %11.4g %9.3f %9.3f\n', lib_names{k}, mu, sd, ...
+            gaussSkew(k, s), gaussExKurt(k, s));
+
+        hold(ax, 'on');
+        histogram(ax, cv, 30, 'Normalization', 'pdf', 'FaceColor', histCols{s}, ...
+            'EdgeColor', 'none', 'FaceAlpha', 0.25);
+        if sd > 0
+            xg = linspace(min(min(cv), mu - 4 * sd), max(max(cv), mu + 4 * sd), 400);
+            g = exp(-0.5 * ((xg - mu) / sd).^2) / (sd * sqrt(2 * pi));
+            plot(ax, xg, g, '-', 'Color', cols{s}, 'LineWidth', 1.8);
+            ttl = sprintf('%s: %s\n(mu = %.3g, sd = %.3g)', eqn_names{s}, lib_names{k}, mu, sd);
+        else
+            ttl = sprintf('%s: %s\n(sd = 0, no Gaussian)', eqn_names{s}, lib_names{k});
+        end
+        xline(ax, 0, ':');
+        hold(ax, 'off');
+        if p == 1
+            ylabel(ax, 'density');
+        end
+        set(ax, 'FontSize', 9);
+        title(ax, ttl, 'Interpreter', 'none', 'FontSize', 9, 'FontWeight', 'normal');
+        box(ax, 'on');
+    end
+end
+title(tl314, sprintf(['Gaussian fits (sample mean and sd) to the refit coefficients, ' ...
+    '%d draws; faint bars: histogram scaled as a density'], nValid));
+
+% 315: multivariate Gaussian over the kept refit coefficients (mean vector and
+% covariance of coefMat from Figure 313), so sampled models keep the
+% correlations between coefficients. Every sampled model is solved from the GP
+% mean at day 0 to gauss_tEnd. Models that diverge, fail or go negative are
+% excluded from the pointwise mean and the 2.5/97.5 percentile band.
+nG = ens_cfg.gauss_nSamples;
+gMu = mean(coefMat, 1)';
+gSigma = cov(coefMat);
+SG = joint_sampler(gSigma, ens_cfg.rel_jitters);
+rng_prev = rng;
+rng(ens_cfg.seed + 1);
+gDraws = gMu + SG.L * randn(nK, nG);
+rng(rng_prev);
+XiG = zeros(nLib, 2, nG);
+for q = 1:nK
+    XiG(kIdx(q), sIdx(q), :) = reshape(gDraws(q, :), 1, 1, nG);
+end
+
+tG = (0:0.5:ens_cfg.gauss_tEnd)';
+ws_ode = warning;
+warning('off', 'MATLAB:ode15s:IntegrationTolNotMet');
+[solG, statusG, negG] = simulate_ensemble(XiG, repmat(x0Med, 1, nG), tG, ens_cfg.blowup);
+warning(ws_ode);
+feasG = strcmp(statusG, 'ok') & ~negG;
+meanG = nan(numel(tG), 2);
+if any(feasG)
+    for s = 1:2
+        meanG(:, s) = mean(solG(:, s, feasG), 3);
+    end
+end
+envG = traj_envelope(solG, feasG);
+fprintf(['\nGaussian over %d refit coefficients: min correlation eigenvalue %.3e, ' ...
+    'relative jitter %.1e\n'], nK, SG.min_eig_corr, SG.eps_rel);
+fprintf(['Gaussian-sampled models (%d, days 0-%g from the GP mean at day 0): ok %d, ' ...
+    'diverged %d, failed %d; went negative %d; kept (ok and nonnegative) %d\n'], ...
+    nG, ens_cfg.gauss_tEnd, nnz(strcmp(statusG, 'ok')), nnz(strcmp(statusG, 'diverged')), ...
+    nnz(strcmp(statusG, 'failed')), nnz(negG), nnz(feasG));
+
+gaussProp = struct();
+gaussProp.mu = gMu;
+gaussProp.Sigma = gSigma;
+gaussProp.labels = coefLbl;
+gaussProp.nSamples = nG;
+gaussProp.x0 = x0Med;
+gaussProp.t = tG;
+gaussProp.XiG = XiG;
+gaussProp.status = statusG;
+gaussProp.neg = negG;
+gaussProp.feas = feasG;
+gaussProp.meanTraj = meanG;
+gaussProp.env = envG;
+gaussProp.eps_rel = SG.eps_rel;
+gaussProp.min_eig_corr = SG.min_eig_corr;
+
+fig315 = figure(315);
+set(fig315, 'Color', 'w', 'WindowStyle', 'docked', 'Name', ...
+    sprintf('Subset refit: Gaussian-sampled models, days 0-%g', ens_cfg.gauss_tEnd));
+tl315 = tiledlayout(fig315, 1, 2, 'TileSpacing', 'compact');
+for s = 1:2
+    ax = nexttile(tl315);
+    hold(ax, 'on');
+    if all(isfinite(envG(:, 1, s)))
+        fill(ax, [tG; flipud(tG)], [envG(:, 3, s); flipud(envG(:, 1, s))], cols{s}, ...
+            'FaceAlpha', 0.2, 'EdgeColor', 'none', 'DisplayName', '95% range');
+    end
+    if all(isfinite(meanG(:, s)))
+        plot(ax, tG, meanG(:, s), '-', 'Color', cols{s}, 'LineWidth', 2.0, ...
+            'DisplayName', 'Mean trajectory');
+    end
+    scatter(ax, tObsC{s}, yObsC{s}, 40, cols{s}, 'filled', 'DisplayName', 'Data (days 0-14)');
+    scatter(ax, tHold(s), yHold(s), 60, cols{s}, 'd', 'filled', 'DisplayName', 'Day 35 (held out)');
+    hold(ax, 'off');
+    xlim(ax, [0, ens_cfg.gauss_tEnd]);
+    xlabel(ax, 'Time (Days)');
+    ylabel(ax, 'cells/mm^2');
+    title(ax, sprintf('M%d', s));
+    legend(ax, 'Location', 'best');
+    set(ax, 'FontSize', 12);
+    box(ax, 'on');
+end
+title(tl315, sprintf(['Multivariate Gaussian over refit coefficients: %d sampled models, ' ...
+    '%d kept (ok and nonnegative to day %g); mean and 95%% band'], ...
+    nG, nnz(feasG), ens_cfg.gauss_tEnd));
+
 %% Validation
 fprintf('\n--- Ensemble validation ---\n');
 check_true(acc.accepted == nSamples && size(Xsamples, 3) == nSamples, ...
@@ -955,6 +1165,13 @@ sub.XiSubMean = XiSubMean;
 sub.XiSubMed = XiSubMed;
 sub.stats = statsSub;
 sub.corr = corrSub;
+sub.corrAll = corrAll;
+sub.corrAllLabels = coefLbl;
+sub.gaussMu = gaussMu;
+sub.gaussSd = gaussSd;
+sub.gaussSkew = gaussSkew;
+sub.gaussExKurt = gaussExKurt;
+sub.gaussProp = gaussProp;
 sub.condSub = condSub;
 sub.drawIdx = valid;
 sub.regression = 'ordinary least squares on the kept terms, no thresholding';
@@ -973,16 +1190,16 @@ end
 %% Local helpers
 function Xi = stls(Theta, X_dot, lambda)
 % Sequential thresholded least squares. Theta is n x p, X_dot is n x 2.
-Xi = Theta \ X_dot;
+Xi = Theta \ X_dot; % ordinary least squares on all 10 terms, for both equations at once.
 for k = 1:100
-    smallinds = abs(Xi) < lambda;
-    Xi(smallinds) = 0;
+    smallinds = abs(Xi) < lambda; 
+    Xi(smallinds) = 0; %set every coefficient with magnitude below lambda to 0. A term that's been zeroed stays zeroed, because 0 is always below lambda.
     for ind = 1:size(X_dot, 2)
-        biginds = ~smallinds(:, ind);
+        biginds = ~smallinds(:, ind); 
         if any(biginds)
-            Xi(biginds, ind) = Theta(:, biginds) \ X_dot(:, ind);
+            Xi(biginds, ind) = Theta(:, biginds) \ X_dot(:, ind); %for each equation, refit least squares using only the terms that remain.
         end
-    end
+    end %repeat 100 times. It usually settles within a few iterations, and the remaining passes change nothing.
 end
 end
 
@@ -1010,73 +1227,111 @@ end
 
 %% GP helpers (same models as GP_for_Andrea.m)
 function fit = fit_m1_day0(x, y, s2_day0, xs, meanfunc, covfunc, max_iters)
-is_day0 = abs(x(:)) < 1e-12;
+is_day0 = abs(x(:)) < 1e-12; %T/F, getting 0 time points
 [hyp, mu, s2, nlml] = fit_day0_noise(x, y, xs, is_day0, s2_day0, ...
-    meanfunc, covfunc, max_iters);
-fit.hyp = hyp;
-fit.nlml = nlml;
-fit.mu = mu;
-fit.s2 = s2;
-fit.noise_var = day0_noise_vec(hyp, is_day0, s2_day0);
+    meanfunc, covfunc, max_iters); %call funciton to optimize and predict
+%Below pack the result into the struct fitM1
+fit.hyp = hyp; %the optimized hyperparameters on the log scale.
+fit.nlml = nlml; %the final negative log marginal likelihood.
+fit.mu = mu; %the posterior mean of f at 351 grid points
+fit.s2 = s2; %the posterior variance of f at 351 grid points
+fit.noise_var = day0_noise_vec(hyp, is_day0, s2_day0); %19×1 per-row noise variance: 50 on the day-0 rows and s_n^2 on the rest
 fprintf('M1 SE: NLML=%.4f | ell=%.4f | sf=%.4f | sn=%.4f | sn_day0=%.4f\n', ...
-    nlml, exp(hyp.cov(1)), exp(hyp.cov(2)), exp(hyp.lik), sqrt(s2_day0));
+    nlml, exp(hyp.cov(1)), exp(hyp.cov(2)), exp(hyp.lik), sqrt(s2_day0)); %wrapped in exp to get values back to initial scale (not log)
 end
 
 function s2 = day0_sample_var(t, y)
-yi = y(abs(t) < 1e-12);
+yi = y(abs(t) < 1e-12); % T/F value for each time point; true for time essentially 0
 if numel(yi) < 2
     error('SINDy:Day0Var', 'Day 0 needs at least two full-data points.');
 end
-s2 = var(yi, 0);
+s2 = var(yi, 0); %Calculate sample variance of day-0 replicates. var(y,0) uses (n-1) in divisor (sample variance).
 end
 
-function [hyp, mu, s2, nlml] = fit_day0_noise(x, y, xs, is_day0, s2_day0, meanfunc, covfunc, max_iters)
+%var(y) = 1/(n-1) Sum_i=1^n (y_i - mean(y))^2
+
+function [hyp, mu, s2, nlml] = fit_day0_noise(x, y, xs, is_day0, s2_day0, meanfunc, covfunc, max_iters) %does the optimization and prediction
+% x = time1
+% y = dataM1
+%s2_day0 = 50, fixed day 0 noise variance
+% xs = t_grid = 0:0.1:35, 351 points, where to predict
+% meanfunc = @meanZero
+% covfunc = @covSEiso
+% max_iters = -200, For GPML's minimize, a negative value caps the number of function evaluations at 200
+
 % Zero-mean GP. Day-0 noise variance is fixed. One sn for every other time.
-x = x(:); y = y(:); xs = xs(:); is_day0 = logical(is_day0(:));
-ell0 = max(std(x), 0.5);
-sf0 = max(std(y), 0.1);
-sn0 = 0.1 * max(std(y(~is_day0)), 0.1);
+x = x(:); y = y(:); xs = xs(:); is_day0 = logical(is_day0(:)); %all col vectors for consistent matrix alg
+
+% max(..., floor) needed in all be if a starting value is 0, its log would be -inf 
+ell0 = max(std(x), 0.5); %initialize l to std dev of times at least 0.5 days
+sf0 = max(std(y), 0.1); %init amplitude to std dev of counts at least 0.1
+sn0 = 0.1 * max(std(y(~is_day0)), 0.1); %init noise at 10% of std dev of counts on days other than 0. Floor at 0.1 
+
+%GPML hyperparameter struct:
 hyp.mean = [];
 hyp.cov = log([ell0; sf0]);
 hyp.lik = log(sn0);
-obj = @(h) nlml_day0_fixed(h, meanfunc, covfunc, x, y, is_day0, s2_day0);
-hyp = minimize(hyp, obj, max_iters);
-nlml = obj(hyp);
+
+obj = @(h) nlml_day0_fixed(h, meanfunc, covfunc, x, y, is_day0, s2_day0); %anonymous function, Each time obj is called, h holds one candidate set of hyperparameters.
+hyp = minimize(hyp, obj, max_iters); % runs conjugate-gradient optimization and returns the best hyp it finds within 200 evaluations.
+nlml = obj(hyp); %evaluates the objective once more to get the final NLML value.
 noise_var = day0_noise_vec(hyp, is_day0, s2_day0);
-[mu, s2] = pred_fixed_noise(hyp, meanfunc, covfunc, x, y, noise_var, xs);
+[mu, s2] = pred_fixed_noise(hyp, meanfunc, covfunc, x, y, noise_var, xs); %compute the posterior of f on tgrid.
 end
 
 function noise = day0_noise_vec(hyp, is_day0, s2_day0)
+% Per-row noise: fills every row with s_n^2 = e^{2log s_n}, then overwrites
+% day 0 rows with s2_day0 (=50)
 noise = exp(2 * hyp.lik) * ones(numel(is_day0), 1);
 noise(is_day0) = s2_day0;
 end
 
-function [nlml, dnlml] = nlml_day0_fixed(hyp, meanfunc, covfunc, x, y, is_day0, s2_day0)
+%Similar to built in gp() but needed custom way to compute likelihood to accomodate the fixed day 0 variance
+function [nlml, dnlml] = nlml_day0_fixed(hyp, meanfunc, covfunc, x, y, is_day0, s2_day0) 
 n = numel(x);
-m = feval(meanfunc, hyp.mean, x);
-[K, dK] = cov_eval(covfunc, hyp.cov, x);
+m = feval(meanfunc, hyp.mean, x); % prior mean vector, all zeros
+[K, dK] = cov_eval(covfunc, hyp.cov, x); %k is SE kernel matrix. dK is a GPML function handle that takes a matrix Q and returns gradient terms for log l and log sf
 sn2 = exp(2 * hyp.lik);
 noise = day0_noise_vec(hyp, is_day0, s2_day0);
-jitter = 1e-6;
-L = chol(K + diag(noise + jitter), 'lower');
+jitter = 1e-6; %The jitter is a tiny numerical safeguard that keeps the factorization stable and has no practical effect.
+L = chol(K + diag(noise + jitter), 'lower'); %Cholesky factorization, avoids inversion
 alpha = L' \ (L \ (y - m));
-nlml = (y - m)' * alpha / 2 + sum(log(diag(L))) + n * log(2 * pi) / 2;
+nlml = (y - m)' * alpha / 2 + sum(log(diag(L))) + n * log(2 * pi) / 2; %NLML eqnt (with Cholesky factors)
+% computing the gradient, computed only when minimize asks for it:
 if nargout > 1
     Q = L' \ (L \ eye(n)) - alpha * alpha';
     dnlml = hyp;
     dnlml.mean = [];
     dnlml.cov = dK(Q) / 2;
-    dnlml.lik = sum(diag(Q) .* sn2 .* ~is_day0);
+    dnlml.lik = sum(diag(Q) .* sn2 .* ~is_day0); % day0 rows get 0 gradient, making their variance fixed
 end
 end
 
 function fit = fit_full_lognoise(x, y, xs, meanfunc, mean_noise, ...
     covfunc, inffunc, likfunc, max_iters)
+% Fits GP on data with noise that changes over time
+%Uses 2 GPs: singal GP models M2 data, noise GP models log of the replicate variance across days
+% The 2 GPs are fit alternately in two passes
+
+% x,y = timeM2, dataM2
+% xs = tgrid(0:0.1:35)
+% meanfunc = @meanZero, the Signal GP mean
+% mean_noise = @meanConst, the Noise GP mean
+% covfunc = {@covMaterniso, 5}, used for both Signal GP and Noise GP
+% inffunc, likfunc = @infGaussLik, @likGauss
+% max_iters = -200
+
 x = x(:); y = y(:);
-hyp_s = fit_homo_best(x, y, inffunc, meanfunc, covfunc, likfunc, max_iters);
-[t_obs, log_s2, n_rep] = log_replicate_var(x, y);
-noise_mean = mean(log_s2);
-hyp_n = init_noise_hyp(log_s2);
+hyp_s = fit_homo_best(x, y, inffunc, meanfunc, covfunc, likfunc, max_iters); %fits an ordinary GP with one noise level for every point. Its role is to supply a starting lengthscale and starting signal hyperparameters.
+[t_obs, log_s2, n_rep] = log_replicate_var(x, y); %computes the log sample variance on each day with at least two replicates.
+noise_mean = mean(log_s2); %fixes the noise GP's mean at the average of those log variances.
+hyp_n = init_noise_hyp(log_s2); %sets the noise GP's starting amplitude and stretch factor.
+
+% two alternating passes. Each pass:
+    % reads the current signal lengthscale 
+    % fits the noise GP, whose lengthscale is kl
+    % predicts a noise variance for every one of the 20 data rows;
+    % refits the signal GP's l and sf with that noise held fixed, and computes its posterior on tgrid.
 for pass = 1:2
     ell = exp(hyp_s.cov(1));
     hyp_n = fit_noise_gp(t_obs, log_s2, n_rep, ell, noise_mean, mean_noise, covfunc, hyp_n, max_iters);
@@ -1084,6 +1339,7 @@ for pass = 1:2
     [hyp_s, mu, s2, nlml] = fit_fixed_noise(x, y, xs, noise_var, ...
         meanfunc, covfunc, hyp_s, max_iters);
 end
+% pack the same fields as fitM1: hyp, nlml, mu, s2 and noise_var.
 fit.hyp = hyp_s;
 fit.nlml = nlml;
 fit.mu = mu;
@@ -1108,13 +1364,18 @@ n_rep = zeros(0, 1);
 for i = 1:numel(t_all)
     yi = y(abs(t - t_all(i)) < 1e-12);
     if numel(yi) >= 2
-        s2 = max(var(yi, 0), 1e-8);
+        s2 = max(var(yi, 0), 1e-8); %The 1e-8 floor stops identical replicates from producing log0.
         t_obs(end+1, 1) = t_all(i); %#ok<AGROW>
         log_s2(end+1, 1) = log(s2); %#ok<AGROW>
         n_rep(end+1, 1) = numel(yi); %#ok<AGROW>
     end
 end
 end
+% Note that '#ok<AGROW>' is a special instruction called a code analyzer directive (or pragma). 
+% It tells the MATLAB Editor to ignore the warning about a variable changing size dynamically inside a loop.
+% This does represent a performance bottleneck that could be fixed by
+% preallocating array before the loop.
+
 
 function hyp = init_noise_hyp(log_s2)
 % The constant mean is fixed outside this struct. Only amplitude and k are free.
@@ -1142,13 +1403,14 @@ end
 
 function hyp = fit_homo_best(x, y, inffunc, meanfunc, covfunc, likfunc, max_iters)
 % Several lengthscale starts. Matern 5/2 has a white-noise local minimum.
+    % With noisy replicate data, the Matérn 5/2 likelihood has a local minimum where the lengthscale is very short and the large noise term explains almost everything. A single start can get stuck there.
 x = x(:); y = y(:);
-starts = unique([max(std(x), 0.5); 0.5; 1; 2; 4]);
+starts = unique([max(std(x), 0.5); 0.5; 1; 2; 4]); % tries several starts; keeps fit with lowest NLML
 best = inf;
 hyp = [];
 for i = 1:numel(starts)
     hyp_i = optimize_homo(x, y, starts(i), inffunc, meanfunc, covfunc, likfunc, max_iters);
-    nlml = gp(hyp_i, inffunc, meanfunc, covfunc, likfunc, x, y);
+    nlml = gp(hyp_i, inffunc, meanfunc, covfunc, likfunc, x, y); %Use GPML's gp() function directly.
     if nlml < best
         best = nlml;
         hyp = hyp_i;
@@ -1157,8 +1419,8 @@ end
 end
 
 function hyp = optimize_homo(x, y, ell0, inffunc, meanfunc, covfunc, likfunc, max_iters)
-sf0 = max(std(y), 0.1);
-sn0 = 0.1 * sf0;
+sf0 = max(std(y), 0.1); %for each lengthscale, sf starts at the std dev of the counts 
+sn0 = 0.1 * sf0; % for each lengthscale, sn starts at 10% of the sf0
 if sn0 <= 0
     sn0 = 0.1;
 end
@@ -1195,24 +1457,28 @@ if nargout > 1
 end
 end
 
-function [fmu, fs2] = pred_fixed_noise(hyp, meanfunc, covfunc, x, y, noise_var, xs)
+function [fmu, fs2] = pred_fixed_noise(hyp, meanfunc, covfunc, x, y, noise_var, xs) %The posterior on the grid
 m = feval(meanfunc, hyp.mean, x);
 K = cov_eval(covfunc, hyp.cov, x);
 jitter = 1e-6;
 L = chol(K + diag(noise_var(:) + jitter), 'lower');
 alpha = L' \ (L \ (y(:) - m));
 ms = feval(meanfunc, hyp.mean, xs(:));
-Ks = cov_eval(covfunc, hyp.cov, x, xs(:));
-kss = cov_eval(covfunc, hyp.cov, xs(:), 'diag');
-fmu = ms(:) + Ks' * alpha;
-V = L \ Ks;
-fs2 = max(kss(:) - sum(V.^2, 1)', 0);
+Ks = cov_eval(covfunc, hyp.cov, x, xs(:)); %the 19×351 covariance between the training times and the grid
+kss = cov_eval(covfunc, hyp.cov, xs(:), 'diag'); %the prior variance at each grid point
+fmu = ms(:) + Ks' * alpha; %GP prediction mean equation (means are all 0)
+V = L \ Ks; %computes the subtracted term without an explicit inverse
+fs2 = max(kss(:) - sum(V.^2, 1)', 0); %GP prediction variance equation, floor prevents rounding from producing slightly neg variance
+%This is the posterior of the latent curve f, with no observation noise added. So the shaded band in Figure 198 is uncertainty about the mean curve, not a prediction interval for new replicate counts.
 end
 
 function [dmu, ds2] = deriv_fixed_noise(hyp, kernel, meanfunc, covfunc, x, y, noise_var, xs)
 % Posterior of f'(xs) for a zero-mean GP:
 %   dmu = K_{f',f} Ky^{-1} (y - m),  ds2 = diag(K_{f',f'} - K_{f',f} Ky^{-1} K_{f,f'}).
 % kernel is 'se' (covSEiso) or 'matern5' (covMaterniso, 5); hyp.cov = log([ell; sf]).
+%the derivative follows from the ordinary prediction equations with derivative versions of the kernel.
+
+%identical to pred_fixed_noise:
 x = x(:); y = y(:); xs = xs(:);
 m = feval(meanfunc, hyp.mean, x);
 K = cov_eval(covfunc, hyp.cov, x);
@@ -1221,15 +1487,17 @@ L = chol(K + diag(noise_var(:) + jitter), 'lower');
 alpha = L' \ (L \ (y - m));
 ell = exp(hyp.cov(1));
 sf2 = exp(2 * hyp.cov(2));
+%
 d = xs - x';
+%analytic kernel derivs: 
 switch kernel
     case 'se'
-        dKs = -sf2 * (d / ell^2) .* exp(-d.^2 / (2 * ell^2));
-        kdd = sf2 / ell^2;
+        dKs = -sf2 * (d / ell^2) .* exp(-d.^2 / (2 * ell^2)); %covariance between the derivative at each prediction time and the function at each training time.
+        kdd = sf2 / ell^2; %%the prior variance of f' at any single time. It's one number because the kernel is stationary.
     case 'matern5'
         a = sqrt(5) * abs(d) / ell;
-        dKs = -sf2 * (5 * d / (3 * ell^2)) .* (1 + a) .* exp(-a);
-        kdd = 5 * sf2 / (3 * ell^2);
+        dKs = -sf2 * (5 * d / (3 * ell^2)) .* (1 + a) .* exp(-a); %covariance between the derivative at each prediction time and the function at each training time.
+        kdd = 5 * sf2 / (3 * ell^2); %the prior variance of f' at any single time. It's one number because the kernel is stationary.
     otherwise
         error('SINDy:Kernel', 'Unknown kernel ''%s''.', kernel);
 end
@@ -1323,27 +1591,32 @@ Kfd = -Kdf;
 end
 
 function post = joint_state_deriv_posterior(hyp, kernel, meanfunc, covfunc, x, y, noise_var, xs)
+% omputes the joint Gaussian posterior of the state curve and its derivative on the SINDy grid (5o points in 0-14). 
+% It gives one mean vector and one covariance matrix covering both.
 % Posterior of [f(xs); f'(xs)] | y for a zero-mean GP with fixed per-row noise.
 % Latent function only: no observation noise is added at xs.
 % Time is in days, so f' is in cells/mm^2/day.
-if ~strcmp(func2str(meanfunc), 'meanZero')
+if ~strcmp(func2str(meanfunc), 'meanZero') %just a check that mean is zero
     error('SINDy:JointMean', 'The joint posterior assumes meanZero (zero mean derivative).');
 end
+% Just like pred_fixed_noise:
 x = x(:); y = y(:); xs = xs(:);
 n = numel(xs);
 Kxx = cov_eval(covfunc, hyp.cov, x);
 jitter = 1e-6;   % same training jitter as pred_fixed_noise / deriv_fixed_noise
 L = chol(Kxx + diag(noise_var(:) + jitter), 'lower');
 alpha = L' \ (L \ y);
+%
+% Cov blocks from kernel_blocks
 [Ksx, Kdx] = kernel_blocks(kernel, hyp.cov, xs, x);
 [Kss, Kdf_ss, Kfd_ss, Kdd_ss] = kernel_blocks(kernel, hyp.cov, xs, xs);
 C = [Ksx; Kdx];
 P = [Kss, Kfd_ss; Kdf_ss, Kdd_ss];
-mu = C * alpha;
+mu = C * alpha; %posterior mean
 V = L \ C';
-Sigma = P - V' * V;
-post.asym = norm(Sigma - Sigma', 'fro') / max(norm(Sigma, 'fro'), realmin);
-Sigma = (Sigma + Sigma') / 2;
+Sigma = P - V' * V; %posterior covariance
+post.asym = norm(Sigma - Sigma', 'fro') / max(norm(Sigma, 'fro'), realmin); %rounding leaves sigma slighlty assymetric this records how far off it is 
+Sigma = (Sigma + Sigma') / 2; % symmetrizes Sigma by averaging with its transpose
 Kgpml = cov_eval(covfunc, hyp.cov, x, xs)';
 post.kernel_gpml_err = max(abs(Ksx(:) - Kgpml(:))) / max(abs(Kgpml(:)));
 post.t = xs;
@@ -1354,16 +1627,23 @@ post.Sigma = Sigma;
 end
 
 function S = joint_sampler(Sigma, rel_jitters)
+%turns the covariance from joint_state_deriv_posterior into a matrix factor that can be used to draw random samples from it, with care for numerical issues.
 % Cholesky factor for drawing from N(0, Sigma). States and derivatives differ
 % in scale, so the correlation matrix R = D^-1/2 Sigma D^-1/2 is factorized and
 % any jitter is relative to each component's own variance:
 %   Sigma + eps * diag(diag(Sigma)) = (D^1/2 Lr)(D^1/2 Lr)'.
 % The smallest eps in rel_jitters that gives a positive-definite factor is used.
-sd = sqrt(max(diag(Sigma), 0));
-sd = max(sd, 1e-12 * max(sd));
-R = Sigma ./ (sd * sd');
+sd = sqrt(max(diag(Sigma), 0)); %the posterior standard deviation of each of the 100 components.
+sd = max(sd, 1e-12 * max(sd)); %Floor that prevents division by zero if any variance rounds to 0.
+R = Sigma ./ (sd * sd'); %Correlation matrix, normalized
 R = (R + R') / 2;
-S.min_eig_corr = min(eig(R));
+S.min_eig_corr = min(eig(R)); %Diagnostic, records smallest eval of R. Value near 0 or slightly neg means the matrix is nearly singular
+%Trying different jitter amounts, stops at the first that lets chol succeed
+% Output struct S:
+    %L, the factor used for sampling;
+    %eps_rel, the jitter actually used;
+    %sd, the standard deviations;
+    %min_eig_corr, the smallest eigenvalue of R
 for eps_rel = rel_jitters(:)'
     [Lr, p] = chol(R + eps_rel * eye(size(R, 1)), 'lower');
     if p == 0
@@ -1374,7 +1654,7 @@ for eps_rel = rel_jitters(:)'
     end
 end
 error('SINDy:JointChol', ['Joint posterior covariance is not positive definite even with ' ...
-    'relative jitter %.1e (min correlation eigenvalue %.3e).'], max(rel_jitters), S.min_eig_corr);
+    'relative jitter %.1e (min correlation eigenvalue %.3e).'], max(rel_jitters), S.min_eig_corr); %if all jitter values fail, the function stops with an error instead of adding more jitter quietly.
 end
 
 function err = check_kernel_derivs(kernel, hyp_cov, covfunc, pairs)
@@ -1410,8 +1690,11 @@ fprintf('  min eigenvalue of correlation matrix %.3e | relative jitter used %.1e
 end
 
 function [X, dX, acc] = draw_nonneg_pairs(post1, S1, post2, S2, nWant, maxDraws)
+% Draws mathces (state, derivative) trajectories
+    % Draws one 100-element vector for each species.
 % Joint draws [M1; dM1] and [M2; dM2] until nWant pairs have no negative state
-% on the grid. Derivatives may be negative. The constraint is never relaxed.
+% on the grid (aka  the pair is rejected if any state value on the grid is negative). 
+% Derivatives may be negative. The constraint is never relaxed.
 n = numel(post1.t);
 iS = 1:n;
 iD = n+1:2*n;
@@ -1567,14 +1850,14 @@ end
 end
 
 function plot_subset_fit(ax, s, tEnv, env, simMean, simMed, tObs, yObs, col, xl)
-% Refit-ensemble envelope and median trajectory, the mean- and
-% median-coefficient models, and the data, for species s.
+% Refit-ensemble envelope, the mean- and median-coefficient models, and the
+% data, for species s.
 hold(ax, 'on');
 if all(isfinite(env(:, 1, s)))
     fill(ax, [tEnv; flipud(tEnv)], [env(:, 3, s); flipud(env(:, 1, s))], [0.3 0.3 0.3], ...
         'FaceAlpha', 0.18, 'EdgeColor', 'none', 'DisplayName', 'Refit ensemble 95% range');
-    plot(ax, tEnv, env(:, 2, s), ':', 'Color', [0.3 0.3 0.3], 'LineWidth', 1.5, ...
-        'DisplayName', 'Refit ensemble median trajectory');
+    % plot(ax, tEnv, env(:, 2, s), ':', 'Color', [0.3 0.3 0.3], 'LineWidth', 1.5, ...
+    %     'DisplayName', 'Refit ensemble median trajectory');
 end
 if ~isempty(simMean.y)
     plot(ax, simMean.t, simMean.y(:, s), '-', 'Color', col, 'LineWidth', 2.0, ...
